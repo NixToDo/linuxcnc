@@ -884,6 +884,8 @@ obj-$(CONFIG_HAL_GM) += hal_gm.o
 hal_gm-objs := hal/drivers/hal_gm.o $(MATHSTUB)
 obj-$(CONFIG_HAL_PPMC) += hal_ppmc.o
 hal_ppmc-objs := hal/drivers/hal_ppmc.o $(MATHSTUB)
+obj-$(CONFIG_HAL_OSHWDRV) += hal_oshwdrv.o
+hal_oshwdrv-objs := hal/drivers/hal_oshwdrv.o $(MATHSTUB)
 
 #Don't attempt to build Pi / Beaglebone GPIO for RTAI
 ifeq ($(BUILD_SYS),uspace)
@@ -1140,6 +1142,7 @@ endif
 ../rtlib/hal_motenc$(MODULE_EXT): $(addprefix objects/rt,$(hal_motenc-objs))
 ../rtlib/hal_ax5214h$(MODULE_EXT): $(addprefix objects/rt,$(hal_ax5214h-objs))
 ../rtlib/hal_ppmc$(MODULE_EXT): $(addprefix objects/rt,$(hal_ppmc-objs))
+../rtlib/hal_oshwdrv$(MODULE_EXT): $(addprefix objects/rt,$(hal_oshwdrv-objs))
 ../rtlib/hal_skeleton$(MODULE_EXT): $(addprefix objects/rt,$(hal_skeleton-objs))
 ../rtlib/hal_speaker$(MODULE_EXT): $(addprefix objects/rt,$(hal_speaker-objs))
 ../rtlib/opto_ac5$(MODULE_EXT): $(addprefix objects/rt,$(opto_ac5-objs))
@@ -1172,6 +1175,7 @@ endif
 ../rtlib/setsserial$(MODULE_EXT): $(addprefix objects/rt,$(setsserial-objs))
 ../rtlib/hal_parport$(MODULE_EXT): $(addprefix objects/rt,$(hal_parport-objs))
 ../rtlib/hal_ppmc$(MODULE_EXT): $(addprefix objects/rt,$(hal_ppmc-objs))
+../rtlib/hal_oshwdrv$(MODULE_EXT): $(addprefix objects/rt,$(hal_oshwdrv-objs))
 ../rtlib/hm2_eth$(MODULE_EXT): $(addprefix objects/rt,$(hm2_eth-objs))
 ../rtlib/hm2_spi$(MODULE_EXT): $(addprefix objects/rt,$(hm2_spi-objs))
 ../rtlib/hm2_rpspi$(MODULE_EXT): $(addprefix objects/rt,$(hm2_rpspi-objs))

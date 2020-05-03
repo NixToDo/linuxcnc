@@ -1,0 +1,49 @@
+# HAL config file for oshwdrv board
+
+# Set the step generator pulse timing
+setp oshwdrv.0.stepgen.00-03.pulse-width-ns 2000
+setp oshwdrv.0.stepgen.00-03.pulse-space-min-ns 2000
+setp oshwdrv.0.stepgen.00-03.setup-time-ns 700
+
+# Set step generator output scaling
+setp oshwdrv.0.stepgen.00.scale [JOINT_0]SCALE
+setp oshwdrv.0.stepgen.01.scale [JOINT_1]SCALE
+setp oshwdrv.0.stepgen.02.scale [JOINT_2]SCALE
+
+# Set encoder position feedback scaling 
+setp oshwdrv.0.encoder.00.scale [JOINT_0]SCALE_ENC
+setp oshwdrv.0.encoder.01.scale [JOINT_1]SCALE_ENC
+setp oshwdrv.0.encoder.02.scale [JOINT_2]SCALE_ENC
+
+# Set PID loop output limits
+setp pid.0.maxoutput [JOINT_0]PID_MAX_VEL
+setp pid.1.maxoutput [JOINT_1]PID_MAX_VEL
+setp pid.2.maxoutput [JOINT_2]PID_MAX_VEL
+
+# Set PID loop gains
+setp pid.0.Pgain [JOINT_0]P
+setp pid.0.Igain [JOINT_0]I
+setp pid.0.Dgain [JOINT_0]D
+setp pid.0.bias [JOINT_0]BIAS
+setp pid.0.FF0 [JOINT_0]FF0
+setp pid.0.FF1 [JOINT_0]FF1
+setp pid.0.FF2 [JOINT_0]FF2
+setp pid.0.deadband [JOINT_0]DEADBAND
+
+setp pid.1.Pgain [JOINT_1]P
+setp pid.1.Igain [JOINT_1]I
+setp pid.1.Dgain [JOINT_1]D
+setp pid.1.bias [JOINT_1]BIAS
+setp pid.1.FF0 [JOINT_1]FF0
+setp pid.1.FF1 [JOINT_1]FF1
+setp pid.1.FF2 [JOINT_1]FF2
+setp pid.1.deadband [JOINT_1]DEADBAND
+
+setp pid.2.Pgain [JOINT_2]P
+setp pid.2.Igain [JOINT_2]I
+setp pid.2.Dgain [JOINT_2]D
+setp pid.2.bias [JOINT_2]BIAS
+setp pid.2.FF0 [JOINT_2]FF0
+setp pid.2.FF1 [JOINT_2]FF1
+setp pid.2.FF2 [JOINT_2]FF2
+setp pid.2.deadband [JOINT_2]DEADBAND

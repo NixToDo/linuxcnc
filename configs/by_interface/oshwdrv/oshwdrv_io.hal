@@ -1,0 +1,55 @@
+# HAL config file for oshwdrv board
+
+# Connect limit/home switch outputs to motion controller
+net Xhome <= oshwdrv.0.din.00.in
+net Xhome => joint.0.home-sw-in
+#net Xminlim <= oshwdrv.0.din.01.in
+#net Xminlim => joint.0.neg-lim-sw-in
+#net Xmaxlim <= oshwdrv.0.din.02.in
+#net Xmaxlim => joint.0.pos-lim-sw-in
+
+net Yhome <= oshwdrv.0.din.01.in
+net Yhome => joint.1.home-sw-in
+#net Yminlim <= oshwdrv.0.din.04.in
+#net Yminlim => joint.1.neg-lim-sw-in
+#net Ymaxlim <= oshwdrv.0.din.05.in
+#net Ymaxlim => joint.1.pos-lim-sw-in
+
+net Zhome <= oshwdrv.0.din.02.in
+net Zhome => joint.2.home-sw-in
+#net Zminlim <= oshwdrv.0.din.07.in
+#net Zminlim => joint.2.neg-lim-sw-in
+#net Zmaxlim <= oshwdrv.0.din.08.in
+#net Zmaxlim => joint.2.pos-lim-sw-in
+
+# Connect e-stop write/sense to I/O controller
+# and the estop's output, so estop FF is reset, but
+# prevent continued estop signal from univstep from holding FF cleared
+net oshwdrvEstop <= oshwdrv.0.din.15.in-not
+net oshwdrvEstop => and2.0.in0
+net EstopOkOut <= estop-latch.0.ok-out
+net EstopOkOut => iocontrol.0.emc-enable-in
+net EstopOkOut => and2.0.in1
+net EstopOkOut => oshwdrv.0.dout.07.out
+net EstopOkIn <= and2.0.out
+net EstopOkIn => estop-latch.0.fault-in
+net emc-estop-out <= iocontrol.0.user-enable-out
+net emc-estop-out => estop-latch.0.ok-in
+net emc-estop-reset <= iocontrol.0.user-request-enable
+net emc-estop-reset => estop-latch.0.reset
+
+# Connect spindle fwd/rev to I/O controller
+net SpindleFwd <= spindle.0.forward
+net SpindleFwd => oshwdrv.0.dout.00.out
+net SpindleRev <= spindle.0.reverse
+net SpindleRev => oshwdrv.0.dout.01.out
+
+# Connect spindle brake to I/O controller
+net SpindleBrakeOn <= spindle.0.brake
+net SpindleBrakeOn => oshwdrv.0.dout.02.out
+
+# Connect mist/flood coolant to I/O controller
+net MistOn <= iocontrol.0.coolant-mist
+net MistOn => oshwdrv.0.dout.03.out
+net FloodOn <= iocontrol.0.coolant-flood
+net FloodOn => oshwdrv.0.dout.04.out

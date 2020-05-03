@@ -1,0 +1,2 @@
+This is a configuration for the oshwdrv card from NixToDo. See http://www.github.com/nixtodo/oshwdrv for details.
+This configuration includes motion connections and an IO set for handling limit switches, home switches and estop within HAL.

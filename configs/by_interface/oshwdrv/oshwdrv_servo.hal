@@ -1,0 +1,62 @@
+# HAL config file for oshwdrv board
+
+# Connect position commands from motion controller
+net Xpos-cmd <= joint.0.motor-pos-cmd
+net Ypos-cmd <= joint.1.motor-pos-cmd
+net Zpos-cmd <= joint.2.motor-pos-cmd
+
+# Connect position commands to PID input
+net Xpos-cmd => pid.0.command
+net Ypos-cmd => pid.1.command
+net Zpos-cmd => pid.2.command
+
+# Connect position feedback signals from encoders
+net Xpos-fb <= oshwdrv.0.encoder.00.position
+net Ypos-fb <= oshwdrv.0.encoder.01.position
+net Zpos-fb <= oshwdrv.0.encoder.02.position
+
+# Connect position feedback to PID loop
+net Xpos-fb => pid.0.feedback
+net Ypos-fb => pid.1.feedback
+net Zpos-fb => pid.2.feedback
+
+# Connect position feedback to motion module
+net Xpos-fb => joint.0.motor-pos-fb
+net Ypos-fb => joint.1.motor-pos-fb
+net Zpos-fb => joint.2.motor-pos-fb
+
+# Connect output signals from PID loops
+net Xoutput <= pid.0.output
+net Youtput <= pid.1.output
+net Zoutput <= pid.2.output
+
+# Connect PID output signals to step generators
+net Xoutput => oshwdrv.0.stepgen.00.velocity
+net Youtput => oshwdrv.0.stepgen.01.velocity
+net Zoutput => oshwdrv.0.stepgen.02.velocity
+
+# Connect the axis enables outputs from the motion controller
+net Xenable <= joint.0.amp-enable-out
+net Yenable <= joint.1.amp-enable-out
+net Zenable <= joint.2.amp-enable-out
+
+# Connect the axis enables to the PID blocks
+net Xenable => pid.0.enable
+net Yenable => pid.1.enable
+net Zenable => pid.2.enable
+
+# Connect axis enables to step generators
+net Xenable => oshwdrv.0.stepgen.00.enable
+net Yenable => oshwdrv.0.stepgen.01.enable
+net Zenable => oshwdrv.0.stepgen.02.enable
+
+# Connect index pulses to motion controller
+net Xindex <=> oshwdrv.0.encoder.00.index-enable
+net Xindex <=> joint.0.index-enable
+net Xindex => pid.0.index-enable
+net Yindex <=> oshwdrv.0.encoder.01.index-enable
+net Yindex <=> joint.1.index-enable
+net Yindex => pid.1.index-enable
+net Zindex <=> oshwdrv.0.encoder.02.index-enable
+net Zindex <=> joint.2.index-enable
+net Zindex => pid.2.index-enable
