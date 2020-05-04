@@ -872,11 +872,11 @@ static void write_aout (bus_data_t *bus)
 		
 		// Check enable pin
 		if (*(ao->enable) == 0){
-			buf->wr_buf[(addr + AOUT_DATA_0)] = 0;
-			buf->wr_buf[(addr + AOUT_DATA_1)] = 0;
+			bus->wr_buf[(addr + AOUT_DATA_0)] = 0;
+			bus->wr_buf[(addr + AOUT_DATA_1)] = 0;
 			
 			if (ao->mode == 0){
-				buf->wr_buf[(addr + AOUT_HIGH)] = 0;
+				bus->wr_buf[(addr + AOUT_HIGH)] = 0;
 			}
 			
 			continue;
@@ -898,33 +898,33 @@ static void write_aout (bus_data_t *bus)
 		}
 		
 		// Limit offest
-		if (*(ao->offset0) < AOUT_MIN_OFFSET){
-			*(ao->offset0) = AOUT_MIN_OFFSET;
+		if (ao->offset0 < AOUT_MIN_OFFSET){
+			ao->offset0 = AOUT_MIN_OFFSET;
 		}
-		else if (*(ao->offset0) > AOUT_MAX_OFFSET){
-			*(ao->offset0) = AOUT_MAX_OFFSET;
+		else if (ao->offset0 > AOUT_MAX_OFFSET){
+			ao->offset0 = AOUT_MAX_OFFSET;
 		}
 		
-		if (*(ao->offset1) < AOUT_MIN_OFFSET){
-			*(ao->offset1) = AOUT_MIN_OFFSET;
+		if (ao->offset1 < AOUT_MIN_OFFSET){
+			ao->offset1 = AOUT_MIN_OFFSET;
 		}
-		else if (*(ao->offset1) > AOUT_MAX_OFFSET){
-			*(ao->offset1) = AOUT_MAX_OFFSET;
+		else if (ao->offset1 > AOUT_MAX_OFFSET){
+			ao->offset1 = AOUT_MAX_OFFSET;
 		}
 		
 		// Limit scale
-		if (*(ao->scale0) < AOUT_MIN_SCALE){
-			*(ao->scale0) = AOUT_MIN_SCALE;
+		if (ao->scale0 < AOUT_MIN_SCALE){
+			ao->scale0 = AOUT_MIN_SCALE;
 		}
-		else if (*(ao->scale0) > AOUT_MAX_SCALE){
-			*(ao->scale0) = AOUT_MAX_SCALE;
+		else if (ao->scale0 > AOUT_MAX_SCALE){
+			ao->scale0 = AOUT_MAX_SCALE;
 		}
 		
-		if (*(ao->scale1) < AOUT_MIN_SCALE){
-			*(ao->scale1) = AOUT_MIN_SCALE;
+		if (ao->scale1 < AOUT_MIN_SCALE){
+			ao->scale1 = AOUT_MIN_SCALE;
 		}
-		else if (*(ao->scale1) > AOUT_MAX_SCALE){
-			*(ao->scale1) = AOUT_MAX_SCALE;
+		else if (ao->scale1 > AOUT_MAX_SCALE){
+			ao->scale1 = AOUT_MAX_SCALE;
 		}
 		
 		// Calculate data
@@ -947,11 +947,11 @@ static void write_aout (bus_data_t *bus)
 		}
 		
 		// Output data
-		buf->wr_buf[(addr + AOUT_DATA_0)] = val0 & 0xFF;
-		buf->wr_buf[(addr + AOUT_DATA_1)] = val1 & 0xFF;
+		bus->wr_buf[(addr + AOUT_DATA_0)] = val0 & 0xFF;
+		bus->wr_buf[(addr + AOUT_DATA_1)] = val1 & 0xFF;
 		
 		if (ao->mode == 0){
-			buf->wr_buf[(addr + AOUT_HIGH)] = AOUT_ENABLE | ((val1 >> 6) & 0x0D) | ((val0 >> 8) & 0x03);
+			bus->wr_buf[(addr + AOUT_HIGH)] = AOUT_ENABLE | ((val1 >> 6) & 0x0D) | ((val0 >> 8) & 0x03);
 		}
 	}
 }
@@ -1172,7 +1172,7 @@ static int export_din (bus_data_t *bus)
 // Export all digital outputs to the HAL
 static int export_dout (bus_data_t *bus)
 {
-    int cnt, retval, n, id, pinnr;
+    int cnt, retval, n, id, pinnr, lastwr;
 	dout_t *dou;
 
 	cnt = count_modules_id(bus, MODULE_ID_DOUT);
@@ -1202,6 +1202,13 @@ static int export_dout (bus_data_t *bus)
 		// Check for failure
 		if (retval != 0){
 			return retval;
+		}
+		
+		if (dou->mode == 0){
+			lastwr = DOUT_ENABLE;
+		}
+		else {
+			lastwr = DOUT_DATA;
 		}
 		
 		SelWrt(0, dou->wr_addr, port_addr[bus->busnum]); // Set all outputs to low
@@ -1238,8 +1245,8 @@ static int export_dout (bus_data_t *bus)
 	}
 	
 	// Extend the EPP write addresses, if needed
-	if (bus->write_end_addr < dou->wr_addr){
-		bus->write_end_addr = dou->wr_addr;
+	if (bus->write_end_addr < (dou->wr_addr + lastwr)){
+		bus->write_end_addr = dou->wr_addr + lastwr;
 	}
 	
     return 0;
@@ -1248,7 +1255,7 @@ static int export_dout (bus_data_t *bus)
 // Export all Stepencoders to the HAL
 static int export_stepencoder (bus_data_t *bus)
 {
-    int cnt, retval, id, num;
+    int cnt, retval, id, num, lastwr, lastrd;
 	stepenc_t *se, *se2;
 
 	cnt = count_modules_id(bus, MODULE_ID_STEPENC);
@@ -1275,6 +1282,15 @@ static int export_stepencoder (bus_data_t *bus)
 		
 		if (retval != 0){
 			return retval;
+		}
+		
+		if (se->mode == 0){
+			lastwr = STEPENC_SETUP;
+			lastrd = STEPENC_ENC_INDEX;
+		}
+		else {
+			lastwr = STEPENC_GEN_HI;
+			lastrd = STEPENC_ENC_HIGH;
 		}
 		
 		// Export Stepgen HAL pins
@@ -1410,13 +1426,13 @@ static int export_stepencoder (bus_data_t *bus)
 	}
 	
 	// Extend the EPP read addresses, if needed
-	if (bus->read_end_addr < se->rd_addr){
-		bus->read_end_addr = se->rd_addr;
+	if (bus->read_end_addr < (se->rd_addr + lastrd)){
+		bus->read_end_addr = se->rd_addr + lastrd;
 	}
 
 	// Extend the EPP write addresses, if needed
-	if (bus->write_end_addr < se->wr_addr){
-		bus->write_end_addr = se->wr_addr;
+	if (bus->write_end_addr < (se->wr_addr + lastwr)){
+		bus->write_end_addr = se->wr_addr + lastwr;
 	}
 	
 	return 0;
@@ -1425,7 +1441,7 @@ static int export_stepencoder (bus_data_t *bus)
 // Export all Aout to the HAL
 static int export_aout (bus_data_t *bus)
 {
-    int cnt, retval, id;
+    int cnt, retval, id, lastwr;
 	aout_t *ao;
 
 	cnt = count_modules_id(bus, MODULE_ID_AOUT);
@@ -1452,6 +1468,13 @@ static int export_aout (bus_data_t *bus)
 		
 		if (retval != 0){
 			return retval;
+		}
+		
+		if (ao->mode == 0){
+			lastwr = AOUT_HIGH;
+		}
+		else {
+			lastwr = AOUT_DATA_1;
 		}
 		
 		// Export Aout HAL pins
@@ -1506,8 +1529,8 @@ static int export_aout (bus_data_t *bus)
 	}
 	
 	// Extend the EPP write addresses, if needed
-	if (bus->write_end_addr < ao->wr_addr){
-		bus->write_end_addr = ao->wr_addr;
+	if (bus->write_end_addr < (ao->wr_addr + lastwr)){
+		bus->write_end_addr = ao->wr_addr + lastwr;
 	}
 	
 	return 0;
