@@ -96,7 +96,8 @@ MODULE_LICENSE("GPL");
 #define MODULE_WR_STEPENC	0x06
 #define MODULE_WRS_STEPENC	0x04
 #define MODULE_RD_AOUT		0x00
-#define MODULE_WR_AOUT		0x02
+#define MODULE_WR_AOUT		0x03
+#define MODULE_WRS_AOUT		0x02
 #define MODULE_RD_AIN		0x02
 #define MODULE_WR_AIN		0x00
 #define MODULE_RD_WATCHDOG	0x01
@@ -107,7 +108,7 @@ MODULE_LICENSE("GPL");
 #define MODULE_SIMPLE_BIT	0x40
 #define MODULE_ID_BITS		0x3F
 
-// Din addresses
+// Din address offests
 #define DIN_DATA			0
 
 // Dout address offests
@@ -153,6 +154,24 @@ MODULE_LICENSE("GPL");
 #define STEPENC_SETUP_MAX	25500
 #define STEPENC_CNT_BITS	24
 
+// Aout address offests
+#define AOUT_DATA_0			0
+#define AOUT_DATA_1			1
+#define AOUT_HIGH			2
+
+// Aout Bits
+#define AOUT_ENABLE			0x80
+
+// Aout hardware limits
+#define AOUT_MIN_VALUE		0.0
+#define AOUT_MAX_VALUE		10.0
+#define AOUT_MIN_OFFSET		-1.0
+#define AOUT_MAX_OFFSET		1.0
+#define AOUT_MIN_SCALE		0.0
+#define AOUT_MAX_SCALE		200.0
+#define AOUT_MIN_OUTPUT		0
+#define AOUT_MAX_OUTPUT		1023
+
 /***********************************************************************
 *                       STRUCTURE DEFINITIONS                          *
 ************************************************************************/
@@ -195,6 +214,19 @@ typedef struct stepenc_s {
     hal_bit_t     *index_enable;	// Encoder enable index pulse to reset encoder count
 } stepenc_t;
 
+// This structure contains the runtime data for two analog outputs (PWM) 
+typedef struct aout_s {
+    unsigned char wr_addr;	// Base address for writing data
+    unsigned char mode;		// "Normal" or "Simple" mode
+	hal_bit_t     *enable;	// Enable pin
+    hal_float_t   *value0;	// Output 0 value (0 - 10 Volt)
+    hal_float_t   offset0;	// Offset 0, will be added to value before scaling
+    hal_float_t   scale0;	// Scaling 0 parameter (Volt to PWM duty cycle)
+    hal_float_t   *value1;	// Output 1 value
+    hal_float_t   offset1;	// Offset 1, will be added to value before scaling
+    hal_float_t   scale1;	// Scaling 1 parameter (Volt to PWM duty cycle)
+} aout_t;
+
 // This structure contains the runtime data for one complete EPP bus
 typedef struct bus_data_s {
 	int busnum;							// Index of parport[] this struct belongs to
@@ -208,6 +240,8 @@ typedef struct bus_data_s {
     unsigned char num_dout;				// Number of digital output modules
     stepenc_t     *stepenc;				// Ptr to shared memory data for stepencoders
     unsigned char num_stepenc;			// Number of stepencoder modules
+    aout_t        *aout;				// Ptr to shared memory data for aout
+    unsigned char num_aout;				// Number of aout modules
 } bus_data_t;
 
 /***********************************************************************
@@ -236,6 +270,7 @@ static void send_strobe_stepenc (bus_data_t *bus);
 static void read_stepenc (bus_data_t *bus);
 static unsigned int ns2cp (hal_u32_t *pns, unsigned int min_ns, unsigned int max_ns);
 static void write_stepenc (bus_data_t *bus);
+static void write_aout (bus_data_t *bus);
 
 /***********************************************************************
 *                  LOCAL FUNCTION DECLARATIONS                         *
@@ -245,6 +280,7 @@ static int count_modules_id (bus_data_t *bus, int moduleid);
 static int export_din (bus_data_t *bus);
 static int export_dout (bus_data_t *bus);
 static int export_stepencoder (bus_data_t *bus);
+static int export_aout (bus_data_t *bus);
 
 /***********************************************************************
 *                  REALTIME I/O FUNCTION DECLARATIONS                  *
@@ -325,6 +361,8 @@ int rtapi_app_main (void)
 		bus->dout = NULL;
 		bus->num_stepenc = 0;
 		bus->stepenc = NULL;
+		bus->num_aout = 0;
+		bus->aout = NULL;
 		
 		// Read the Module IDs at this bus
 		rv = read_module_ids(bus);
@@ -339,6 +377,7 @@ int rtapi_app_main (void)
 		rv += export_din(bus);
 		rv += export_dout(bus);
 		rv += export_stepencoder(bus);
+		rv += export_aout(bus);
 		
 		// Check for failures at the module export
 		if (rv != 0){
@@ -485,6 +524,7 @@ static void write_all(void *arg, long period)
 	// Call all functions for write (output data)
 	write_dout(bus);
 	write_stepenc(bus);
+	write_aout(bus);
 	
 	// Write data from cache to EPP
 	SelWrt(bus->wr_buf[1], 0x01, port_addr[bus->busnum]);
@@ -814,6 +854,108 @@ static void write_stepenc (bus_data_t *bus)
 	}
 }
 
+static void write_aout (bus_data_t *bus)
+{
+	int n, addr;
+	aout_t *ao;
+	int val0, val1;
+	
+	// Test to make sure it hasn't been freed
+	if (bus->aout == NULL){
+		return;
+	}
+	
+	// Loop through all Aout modules
+	for (n = 0; n < bus->num_aout; n++){
+		ao = &(bus->aout[n]);
+		addr = ao->wr_addr;
+		
+		// Check enable pin
+		if (*(ao->enable) == 0){
+			buf->wr_buf[(addr + AOUT_DATA_0)] = 0;
+			buf->wr_buf[(addr + AOUT_DATA_1)] = 0;
+			
+			if (ao->mode == 0){
+				buf->wr_buf[(addr + AOUT_HIGH)] = 0;
+			}
+			
+			continue;
+		}
+		
+		// Limit value
+		if (*(ao->value0) < AOUT_MIN_VALUE){
+			*(ao->value0) = AOUT_MIN_VALUE;
+		}
+		else if (*(ao->value0) > AOUT_MAX_VALUE){
+			*(ao->value0) = AOUT_MAX_VALUE;
+		}
+		
+		if (*(ao->value1) < AOUT_MIN_VALUE){
+			*(ao->value1) = AOUT_MIN_VALUE;
+		}
+		else if (*(ao->value1) > AOUT_MAX_VALUE){
+			*(ao->value1) = AOUT_MAX_VALUE;
+		}
+		
+		// Limit offest
+		if (*(ao->offset0) < AOUT_MIN_OFFSET){
+			*(ao->offset0) = AOUT_MIN_OFFSET;
+		}
+		else if (*(ao->offset0) > AOUT_MAX_OFFSET){
+			*(ao->offset0) = AOUT_MAX_OFFSET;
+		}
+		
+		if (*(ao->offset1) < AOUT_MIN_OFFSET){
+			*(ao->offset1) = AOUT_MIN_OFFSET;
+		}
+		else if (*(ao->offset1) > AOUT_MAX_OFFSET){
+			*(ao->offset1) = AOUT_MAX_OFFSET;
+		}
+		
+		// Limit scale
+		if (*(ao->scale0) < AOUT_MIN_SCALE){
+			*(ao->scale0) = AOUT_MIN_SCALE;
+		}
+		else if (*(ao->scale0) > AOUT_MAX_SCALE){
+			*(ao->scale0) = AOUT_MAX_SCALE;
+		}
+		
+		if (*(ao->scale1) < AOUT_MIN_SCALE){
+			*(ao->scale1) = AOUT_MIN_SCALE;
+		}
+		else if (*(ao->scale1) > AOUT_MAX_SCALE){
+			*(ao->scale1) = AOUT_MAX_SCALE;
+		}
+		
+		// Calculate data
+		val0 = (int)(ao->scale0 * (*(ao->value0)) + ao->offset0);
+		val1 = (int)(ao->scale1 * (*(ao->value1)) + ao->offset1);
+		
+		// Limit calculated data
+		if (val0 < AOUT_MIN_OUTPUT){
+			val0 = AOUT_MIN_OUTPUT;
+		}
+		else if (val0 > AOUT_MAX_OUTPUT){
+			val0 = AOUT_MAX_OUTPUT;
+		}
+		
+		if (val1 < AOUT_MIN_OUTPUT){
+			val1 = AOUT_MIN_OUTPUT;
+		}
+		else if (val1 > AOUT_MAX_OUTPUT){
+			val1 = AOUT_MAX_OUTPUT;
+		}
+		
+		// Output data
+		buf->wr_buf[(addr + AOUT_DATA_0)] = val0 & 0xFF;
+		buf->wr_buf[(addr + AOUT_DATA_1)] = val1 & 0xFF;
+		
+		if (ao->mode == 0){
+			buf->wr_buf[(addr + AOUT_HIGH)] = AOUT_ENABLE | ((val1 >> 6) & 0x0D) | ((val0 >> 8) & 0x03);
+		}
+	}
+}
+
 /***********************************************************************
 *                   LOCAL FUNCTION DEFINITIONS                         *
 ************************************************************************/
@@ -868,6 +1010,11 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 						bus->stepenc[number].mode = si;
 						break;
 						
+					case MODULE_ID_AOUT:
+						bus->aout[number].wr_addr = w_addr;
+						bus->aout[number].mode = si;
+						break;
+						
 					default:
 						rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: Found unknown module ID\n");
 						return -1;
@@ -911,6 +1058,17 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 				else {
 					r_addr += MODULE_RD_STEPENC;
 					w_addr += MODULE_WR_STEPENC;
+				}				
+				break;
+				
+			case MODULE_ID_AOUT:
+				r_addr += MODULE_RD_AOUT;
+				
+				if (si){ // Simple mode?	
+					w_addr += MODULE_WRS_AOUT;
+				}
+				else {
+					w_addr += MODULE_WR_AOUT;
 				}				
 				break;
 				
@@ -1259,6 +1417,97 @@ static int export_stepencoder (bus_data_t *bus)
 	// Extend the EPP write addresses, if needed
 	if (bus->write_end_addr < se->wr_addr){
 		bus->write_end_addr = se->wr_addr;
+	}
+	
+	return 0;
+}
+
+// Export all Aout to the HAL
+static int export_aout (bus_data_t *bus)
+{
+    int cnt, retval, id;
+	aout_t *ao;
+
+	cnt = count_modules_id(bus, MODULE_ID_AOUT);
+    bus->num_aout = cnt;
+    rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Exporting Aout %d\n", cnt);
+	
+	// Return if no module was found
+	if (cnt < 1){
+		return 0;
+	}
+	
+    // Allocate shared memory for the digital output structs
+    bus->aout = hal_malloc(cnt * sizeof(aout_t));
+    
+    if (bus->aout == 0) {
+        rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: hal_malloc() failed\n");
+        return -1;
+    }
+    
+	for (id = 0; id < cnt; id++){
+		// Loop through all modules found
+		ao = &(bus->aout[id]);
+		retval = module_base_addr(bus, MODULE_ID_AOUT, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Export Aout HAL pins
+		// Aout enable pin
+		retval = hal_pin_bit_newf(HAL_IN, &(ao->enable), comp_id, "oshwdrv.%d.adcout.%02d.enable", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Aout value 0 pin
+		retval = hal_pin_float_newf(HAL_IN, &(ao->value0), comp_id, "oshwdrv.%d.adcout.%02d.value-0", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Aout value 1 pin
+		retval = hal_pin_float_newf(HAL_IN, &(ao->value1), comp_id, "oshwdrv.%d.adcout.%02d.value-1", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Aout offset 0 parameter
+		retval = hal_param_float_newf(HAL_RW, &(ao->offset0), comp_id, "oshwdrv.%d.adcout.%02d.offset-0", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Aout offset 1 parameter
+		retval = hal_param_float_newf(HAL_RW, &(ao->offset1), comp_id, "oshwdrv.%d.adcout.%02d.offset-1", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Aout scale 0 parameter
+		retval = hal_param_float_newf(HAL_RW, &(ao->scale0), comp_id, "oshwdrv.%d.adcout.%02d.scale-0", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Aout scale 1 parameter
+		retval = hal_param_float_newf(HAL_RW, &(ao->scale1), comp_id, "oshwdrv.%d.adcout.%02d.scale-1", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+	}
+	
+	// Extend the EPP write addresses, if needed
+	if (bus->write_end_addr < ao->wr_addr){
+		bus->write_end_addr = ao->wr_addr;
 	}
 	
 	return 0;
