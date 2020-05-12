@@ -23,7 +23,10 @@ import rs274.options
 
 import gettext
 BASE = os.path.abspath(os.path.join(os.path.dirname(sys.argv[0]), ".."))
-gettext.install("linuxcnc", localedir=os.path.join(BASE, "share", "locale"), unicode=True)
+if sys.version_info[0] == 3:
+    gettext.install("linuxcnc", localedir=os.path.join(BASE, "share", "locale"))
+else:
+ gettext.install("linuxcnc", localedir=os.path.join(BASE, "share", "locale"), unicode=True)
 
 if len(sys.argv) > 1 and sys.argv[1] == '-ini':
     ini = linuxcnc.ini(sys.argv[2])
@@ -119,7 +122,11 @@ if s.kinematics_type == 1:
     maps['joint_actual_position'] = None
 
 def gui():
-    import tkinter
+    if sys.version_info[0] == 3:
+        import tkinter
+    else:
+        import Tkinter as tkinter
+
     from _tkinter import TclError
     root = tkinter.Tk(className="LinuxCNCTop")
     rs274.options.install(root)
