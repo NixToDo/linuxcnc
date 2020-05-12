@@ -98,15 +98,15 @@ MODULE_LICENSE("GPL");
 #define MODULE_ID_BITS		0x1F
 
 // Module address area switching
-#define MODULE_NORMAL_AREA	(SelWrt (MODULE_ID_AREA, MODULE_ID_WRITE, port_addr[bus->busnum]))
-#define MODULE_STATIC_AREA	(SelWrt (0, MODULE_ID_WRITE, port_addr[bus->busnum]))
+#define MODULE_NORMAL_AREA	(SelWrt (0, MODULE_ID_WRITE, port_addr[bus->busnum]))
+#define MODULE_STATIC_AREA	(SelWrt (MODULE_ID_AREA, MODULE_ID_WRITE, port_addr[bus->busnum]))
 
 // Module address length (read & write) 
 #define MODULE_RD_DIN		0x01
 #define MODULE_WR_DIN		0x00
 #define MODULE_RD_DOUT		0x00
 #define MODULE_WR_DOUT		0x01
-#define MODULE_RD_STEPENC	0x05
+#define MODULE_RD_STEPENC	0x04
 #define MODULE_WR_STEPENC	0x04
 #define MODULE_RD_AOUT		0x00
 #define MODULE_WR_AOUT		0x03
@@ -388,6 +388,9 @@ int rtapi_app_main (void)
 		rv += export_stepencoder(bus);
 		rv += export_aout(bus);
 		
+		rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Last read address %d\n", bus->read_end_addr);
+		rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Last write address %d\n", bus->write_end_addr);
+		
 		// Check for failures at the module export
 		if (rv != 0){
             rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: Failure at module init\n");
@@ -435,7 +438,7 @@ static int read_module_ids (bus_data_t *bus)
 		rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Module ID %d\n", id);
 		
 		// Value 0xFF will not be used so we can detect them. Also returning the written value indicates missing hardware
-		if (id == cnt || id == 0xFF){
+		if (id == 0xFF){
 			rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: No Module ID found %d\n", id);
 			return -1;
 		}
@@ -717,7 +720,7 @@ static void write_stepenc (bus_data_t *bus)
 		addr = se->wr_addr;
 		
 		// Pulse width or setup time changed?
-		if ((se->step_pulse_width != se->last_pulse_width) || (se->step-setup-time != se->last_setup_time)){
+		if ((se->step_pulse_width != se->last_pulse_width) || (se->step_setup_time != se->last_setup_time)){
 			// Switch to static data area
 			MODULE_STATIC_AREA;
 			
@@ -954,7 +957,8 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 {
 	int n, r_addr, w_addr, id, cnt;
 	
-	r_addr = 0x01; // EPP read / write addresses are starting at 0x01 (0x00 is Module ID stuff only)
+	// EPP read / write addresses are starting at 0x01 (0x00 is Module ID stuff only)
+	r_addr = 0x01;
 	w_addr = 0x01;
 	cnt = 0;
 	
@@ -1029,7 +1033,7 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 				r_addr += MODULE_RD_STEPENC;
 				w_addr += MODULE_WR_STEPENC;
 				
-				if ((cnt % 8) == 0){ // The first and every 8th Stepencoder has an Encoder Index register
+				if (((cnt - 1) % 8) == 0){ // The first and every 8th Stepencoder has an Encoder Index register
 					r_addr++;
 				}
 				break;
