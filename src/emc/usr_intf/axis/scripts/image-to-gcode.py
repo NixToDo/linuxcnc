@@ -21,8 +21,13 @@ import sys, os
 BASE = os.path.abspath(os.path.join(os.path.dirname(sys.argv[0]), ".."))
 sys.path.insert(0, os.path.join(BASE, "lib", "python"))
 
-import gettext;
-gettext.install("linuxcnc", localedir=os.path.join(BASE, "share", "locale"), unicode=True)
+import gettext
+if sys.version_info[0] == 3:
+    gettext.install("linuxcnc", localedir=os.path.join(BASE, "share", "locale"))
+    def cmp(a, b):
+        return (a > b) - (a < b) 
+else:
+    gettext.install("linuxcnc", localedir=os.path.join(BASE, "share", "locale"), unicode=True)
 
 try:
     from PIL import Image
@@ -277,7 +282,7 @@ class Converter:
             w1 = w + tw
             h1 = h + th
             nim1 = numpy.zeros((w1, h1), dtype=numpy.float32) + base_image.min()
-            nim1[tw/2:tw/2+w, th/2:th/2+h] = base_image
+            nim1[int(tw/2):int(tw/2+w), int(th/2):int(th/2+h)] = base_image
             self.image = numpy.zeros((w,h), dtype=numpy.float32)
             for j in range(0, w):
                 progress(j,w)
@@ -495,8 +500,11 @@ class ArcEntryCut:
             conv.g.set_feed(conv.feed)
 
 def ui(im, nim, im_name):
-    import tkinter
-    
+    if sys.version_info[0] == 3:
+        import tkinter
+    else:
+        import Tkinter as tkinter
+
     try:
         from PIL import ImageTk
     except ImportError:    
@@ -753,8 +761,14 @@ def main():
     if len(sys.argv) > 1:
         im_name = sys.argv[1]
     else:
-        import tkinter.filedialog, tkinter
-        im_name = tkinter.filedialog.askopenfilename(defaultextension=".png",
+        if sys.version_info[0] == 3:
+            import tkinter
+            import tkinter.filedialog as tkFileDialog
+        else:
+            import Tkinter as tkinter
+            import tkFileDialog
+
+        im_name = tkFileDialog.askopenfilename(defaultextension=".png",
             filetypes = (
                 (_("Depth images"), ".gif .png .jpg"),
                 (_("All files"), "*")))
