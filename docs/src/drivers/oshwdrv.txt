@@ -16,26 +16,22 @@ So LinuxCNC will read all inputs at the beginnung of each servo cycle,
 process the data (PID, ...) and then write back all new data to the board.
 An typical installation has 16 digital inputs (opto isolated), 8 digital
 outputs (open collector), 4 incemental encoder inputs (A, B and Index),
-4 step generators with step and direction pins.
+4 step puls generators with step and direction pins.
 The board (PCB) has additional circuits for two 0 - 10 VDC outputs and two
-analog inputs (12 Bit, 0 - 10 VDC). Unused pins of the FPGA are connected to
+analog inputs 0 - 10 VDC. Unused pins of the FPGA are connected to
 an extention connector.
 
-My idear to devellop an own hardware driver board was started with playing
-arround with an FPGA. I checked the commercial avialble cards, but I want
-to learn something...
-
-= Overall view
+= Overall function description
 
 At startup of the LinuxCNC driver it reads the configuration from the FPGA.
-There are different FPGA firmewares avialble (Open source).
-The driver will config the exported HAL pins and parameters in accordance to
-the FPGA programming. (Example see above)
-If someone want an different behaver, he only needs to modify the FPGA
-firmeware. The LinuxCNC driver will adapt this the without any change.
-(Except for complete new featchers, ofcorse.)
+There are different FPGA firmewares available (Open source).
+The driver will config itselve and export HAL pins and parameters in accordance
+with the FPGA programming.
+If someone want different functionality or quantity of them, he only needs to modify the FPGA
+firmeware. The LinuxCNC driver will adapt this the without any changes.
+(Except for complete new functions, of course.)
 
-Currently following featchers are avialble:
+Currently following functions are available:
 * 'Digital inputs' -
    In groups of 8 Bits.
 * 'Digital outputs' -
@@ -55,15 +51,17 @@ Currently following featchers are avialble:
 In my mind I have some more things:
 * 'Analog inputs' -
    The analog inputs are read from external analog to digital converters. (12 Bit resolution)
-* 'Handweel encoder inputs' -
+* 'Jog (Handweel encoder) inputs' -
    Decoder for low speed / low resolution quadrature encoders, used usally for manual jogging.
 * 'Watchdog' -
    Resets all outputs to save values (= stops the machine) if the communication with LinuxCNC was lost.
-* 'SPI interface' -
+* 'SPI master / slave interface' -
    To interface external hardware or to interface the driver board with a computer
    that does not have a parallel port (e.g. Raspberry Pi).
 * 'UART / RS485 / Modbus interface' -
    To interface external hardware.
+* 'PWM generator' -
+   To generate a PWM signal with programmable frequency and puls / pause duration.
 
 Installing:
 ----

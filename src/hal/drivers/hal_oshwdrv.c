@@ -84,52 +84,53 @@ MODULE_LICENSE("GPL");
 #define MODULE_ID_AOUT		0x04
 #define MODULE_ID_AIN		0x05
 #define MODULE_ID_WATCHDOG	0x06
+#define MODULE_ID_MSPI		0x07
+#define MODULE_ID_PWM		0x08
+#define MODULE_ID_JOGENC	0x09
 
-// Module address length (read & write, normal or short lenght) 
+// Module ID addresses
+#define MODULE_ID_WRITE		0x00
+#define MODULE_ID_READ		0x00
+
+// Module ID Bits
+#define MODULE_ID_ADDR		0x1F
+#define MODULE_ID_AREA		0x80
+#define MODULE_ID_BITS		0x1F
+
+// Module address area switching
+#define MODULE_NORMAL_AREA	(SelWrt (MODULE_ID_AREA, MODULE_ID_WRITE, port_addr[bus->busnum]))
+#define MODULE_STATIC_AREA	(SelWrt (0, MODULE_ID_WRITE, port_addr[bus->busnum]))
+
+// Module address length (read & write) 
 #define MODULE_RD_DIN		0x01
 #define MODULE_WR_DIN		0x00
 #define MODULE_RD_DOUT		0x00
-#define MODULE_WR_DOUT		0x02
-#define MODULE_WRS_DOUT		0x01
+#define MODULE_WR_DOUT		0x01
 #define MODULE_RD_STEPENC	0x05
-#define MODULE_RDS_STEPENC	0x04
-#define MODULE_WR_STEPENC	0x06
-#define MODULE_WRS_STEPENC	0x04
+#define MODULE_WR_STEPENC	0x04
 #define MODULE_RD_AOUT		0x00
 #define MODULE_WR_AOUT		0x03
-#define MODULE_WRS_AOUT		0x02
-#define MODULE_RD_AIN		0x02
+#define MODULE_RD_AIN		0x03
 #define MODULE_WR_AIN		0x00
-#define MODULE_RD_WATCHDOG	0x01
-#define MODULE_WR_WATCHDOG	0x01
 
-// Module ID Bits
-#define MODULE_VALID_BIT	0x80
-#define MODULE_SIMPLE_BIT	0x40
-#define MODULE_ID_BITS		0x3F
+// Din address offsets
+#define DIN_DATA			0x00
 
-// Din address offests
-#define DIN_DATA			0
-
-// Dout address offests
-#define DOUT_DATA			0
-#define DOUT_ENABLE			1
-
-// Dout Bits
-#define DOUT_ENABLE_BIT		0x01
+// Dout address offsets
+#define DOUT_DATA			0x00
 
 // Stepencoder address offsets
-#define STEPENC_CONTROL		0
-#define STEPENC_GEN_LOW		1
-#define STEPENC_GEN_MID		2
-#define STEPENC_GEN_HI		3
-#define STEPENC_WIDTH		4
-#define STEPENC_SETUP		5
-#define STEPENC_ENC_LOW		0
-#define STEPENC_ENC_MID1	1
-#define STEPENC_ENC_MID2	2
-#define STEPENC_ENC_HIGH	3
-#define STEPENC_ENC_INDEX	4
+#define STEPENC_CONTROL		0x00
+#define STEPENC_GEN_LOW		0x01
+#define STEPENC_GEN_MID		0x02
+#define STEPENC_GEN_HI		0x03
+#define STEPENC_WIDTH		0x00
+#define STEPENC_SETUP		0x01
+#define STEPENC_ENC_LOW		0x00
+#define STEPENC_ENC_MID1	0x01
+#define STEPENC_ENC_MID2	0x02
+#define STEPENC_ENC_HIGH	0x03
+#define STEPENC_ENC_INDEX	0x04
 
 // Stepencoder Bits
 #define STEPENC_ENC_COI		0x80
@@ -137,7 +138,6 @@ MODULE_LICENSE("GPL");
 #define STEPENC_ENC_CLR		0x20
 #define STEPENC_STEP_DIR	0x02
 #define STEPENC_STEP_EN		0x01
-
 #define STEPENC_ENC_INX_7	0x80
 #define STEPENC_ENC_INX_6	0x40
 #define STEPENC_ENC_INX_5	0x20
@@ -154,12 +154,14 @@ MODULE_LICENSE("GPL");
 #define STEPENC_SETUP_MAX	25500
 #define STEPENC_CNT_BITS	24
 
-// Aout address offests
-#define AOUT_DATA_0			0
-#define AOUT_DATA_1			1
-#define AOUT_HIGH			2
+// Aout address offsets
+#define AOUT_DATA_0			0x00
+#define AOUT_DATA_1			0x01
+#define AOUT_HIGH			0x02
 
 // Aout Bits
+#define AOUT_HBITS_0		0x03
+#define AOUT_HBITS_1		0x0C
 #define AOUT_ENABLE			0x80
 
 // Aout hardware limits
@@ -171,6 +173,15 @@ MODULE_LICENSE("GPL");
 #define AOUT_MAX_SCALE		200.0
 #define AOUT_MIN_OUTPUT		0
 #define AOUT_MAX_OUTPUT		1023
+
+// Ain address offsets
+#define AIN_DATA_0			0x00
+#define AIN_DATA_1			0x01
+#define AIN_HIGH			0x02
+
+// Ain Bits
+#define AIN_HBITS_0			0x0F
+#define AIN_HBITS_1			0xF0
 
 /***********************************************************************
 *                       STRUCTURE DEFINITIONS                          *
@@ -185,26 +196,25 @@ typedef struct din_s {
 // This structure contains the runtime data for a digital output
 typedef struct dout_s {
     unsigned char wr_addr;	// Base address for writing data
-	unsigned char mode;		// "Normal" or "Simple" mode
     hal_bit_t *data[8];		// HAL output pin value
     hal_bit_t invert[8];    // HAL parameter to invert output pin
-	hal_bit_t *enable;		// Enable the outputs (only in "Normal" mode)
 } dout_t;
 
 // This structure contains the runtime data for a single stepencoder
 typedef struct stepenc_s {
     unsigned char rd_addr;			// Base address for reading data
     unsigned char wr_addr;			// Base address for writing data
-    unsigned char mode;				// "Normal" or "Simple" mode
-	unsigned char master;			// Number of the corresponding Stepencoder in "Normal" mode
-	unsigned char master_index;		// Index Bit position of the corresponding Stepencoder in "Normal" mode
+	unsigned char master;			// Number of the corresponding Stepencoder
+	unsigned char master_index;		// Index Bit position of the corresponding Stepencoder
 	hal_bit_t     *step_enable;		// Stepgen enable pin
     hal_float_t   *step_vel;		// Stepgen velocity command pin
     hal_float_t   step_scale;		// Stepgen scaling parameter (vel to Hz)
     hal_float_t   step_max_vel;		// Stepgen max velocity limit
     hal_float_t   step_freq;		// Stepgen frequency (velocity cmd scaled to Hz)
     hal_u32_t     step_pulse_width;	// Stepgen pulse width (in nanoseconds)
+	hal_u32_t     last_pulse_width;	// Last written step pulse width value
     hal_u32_t     step_setup_time;	// Stepgen setup time (time between step pulses and dir changes, in nanoseconds)
+	hal_u32_t     last_setup_time;	// Last setup time value written
     hal_s32_t     *count;			// Encoder raw (unscaled) encoder counts
     hal_s32_t     *delta;			// Encoder raw (unscaled) delta counts since last read
     hal_float_t   enc_scale;		// Encoder scaling parameter (counts to position)
@@ -217,7 +227,6 @@ typedef struct stepenc_s {
 // This structure contains the runtime data for two analog outputs (PWM) 
 typedef struct aout_s {
     unsigned char wr_addr;	// Base address for writing data
-    unsigned char mode;		// "Normal" or "Simple" mode
 	hal_bit_t     *enable;	// Enable pin
     hal_float_t   *value0;	// Output 0 value (0 - 10 Volt)
     hal_float_t   offset0;	// Offset 0, will be added to value before scaling
@@ -425,8 +434,8 @@ static int read_module_ids (bus_data_t *bus)
 		id = SelRead(0x00, port_addr[busnum], epp_dir[busnum]); // Read the ID value from EPP address 0x00
 		rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Module ID %d\n", id);
 		
-		// Values 0x00 and 0xFF will not be used so we can detect them. Also returning the written value indicates missing hardware
-		if (id == cnt || id == 0x00 || id == 0xFF){
+		// Value 0xFF will not be used so we can detect them. Also returning the written value indicates missing hardware
+		if (id == cnt || id == 0xFF){
 			rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: No Module ID found %d\n", id);
 			return -1;
 		}
@@ -591,16 +600,6 @@ static void write_dout (bus_data_t *bus)
 		
 		// Write this Byte to the cache
 		bus->wr_buf[(dou->wr_addr + DOUT_DATA)] = outdata;
-		
-		// Output enable pin, only in "Normal" mode
-		if (dou->mode == 0){
-			if (*(dou->enable) != 0){
-				bus->wr_buf[(dou->wr_addr + DOUT_ENABLE)] |= DOUT_ENABLE_BIT;
-			}
-			else {
-				bus->wr_buf[(dou->wr_addr + DOUT_ENABLE)] &= ~DOUT_ENABLE_BIT;
-			}
-		}
 	}
 }
 
@@ -663,17 +662,9 @@ static void read_stepenc (bus_data_t *bus)
 		*(se->enc_vel) = *(se->delta) / (read_period * 1e-9 * se->enc_scale);
 		
 		// Set HAL index pin
-		if (se->mode == 0){
-			// Normal mode
-			addr = se->rd_addr + STEPENC_ENC_INDEX;
-			mask = STEPENC_ENC_INX_0;
-		}
-		else {
-			// Simple mode
-			se2 = &(bus->stepenc[se->master]);
-			addr = se2->rd_addr + STEPENC_ENC_INDEX;
-			mask = se->master_index;
-		}
+		se2 = &(bus->stepenc[se->master]);
+		addr = se2->rd_addr + STEPENC_ENC_INDEX;
+		mask = se->master_index;
 		
 		*(se->index) = bus->rd_buf[addr] & mask;
 		
@@ -725,21 +716,25 @@ static void write_stepenc (bus_data_t *bus)
 		se = &(bus->stepenc[n]);
 		addr = se->wr_addr;
 		
-		// Update these values only if in "Normal" mode
-		if (se->mode == 0){
-			// Set the step pulse width
-			bus->wr_buf[(addr + STEPENC_WIDTH)] = ns2cp(&(se->step_pulse_width), STEPENC_WIDTH_MIN, STEPENC_WIDTH_MAX);
-
-			// Calculate max frequency
-			max_freq = MODULE_CLOCK / (bus->wr_buf[(addr + STEPENC_WIDTH)] + (STEPENC_WIDTH_MIN / 100));
+		// Pulse width or setup time changed?
+		if ((se->step_pulse_width != se->last_pulse_width) || (se->step-setup-time != se->last_setup_time)){
+			// Switch to static data area
+			MODULE_STATIC_AREA;
 			
-			// Set the setup time
-			bus->wr_buf[(addr + STEPENC_SETUP)] = ns2cp(&(se->step_setup_time), STEPENC_SETUP_MIN, STEPENC_SETUP_MAX);			
+			// Save new pulse width value
+			se->last_pulse_width = ns2cp(&(se->step_pulse_width), STEPENC_WIDTH_MIN, STEPENC_WIDTH_MAX);
+			SelWrt (se->last_pulse_width, (addr + STEPENC_WIDTH), port_addr[bus->busnum]);
+			
+			// Save new setup time value
+			se->last_setup_time = ns2cp(&(se->step_setup_time), STEPENC_SETUP_MIN, STEPENC_SETUP_MAX);
+			SelWrt (se->last_setup_time, (addr + STEPENC_SETUP), port_addr[bus->busnum]);
+			
+			// Switch back to normal data area
+			MODULE_NORMAL_AREA;
 		}
-		else {
-			// Calculate max frequency
-			max_freq = MODULE_CLOCK / (ns2cp(&(se->step_pulse_width), STEPENC_WIDTH_MIN, STEPENC_WIDTH_MAX) + (STEPENC_WIDTH_MIN / 100));
-		}
+		
+		// Calculate max frequency
+		max_freq = MODULE_CLOCK / (se->last_pulse_width + (STEPENC_WIDTH_MIN / 100));
 		
 		// Validate the HAL scale value
 		if (se->step_scale < 0.0){
@@ -798,6 +793,8 @@ static void write_stepenc (bus_data_t *bus)
 		if (freq > max_freq){
 			freq = max_freq;
 			divisor = MODULE_CLOCK / freq;
+			// Subtract step pulse width 
+			divisor -= ns2cp(&(se->step_pulse_width), STEPENC_WIDTH_MIN, STEPENC_WIDTH_MAX);
 		}
 		else if (freq < (MODULE_CLOCK / ((1 << STEPENC_CNT_BITS) - 1))){
 			// Frequency would result in a divisor greater than 2^24-1
@@ -874,11 +871,7 @@ static void write_aout (bus_data_t *bus)
 		if (*(ao->enable) == 0){
 			bus->wr_buf[(addr + AOUT_DATA_0)] = 0;
 			bus->wr_buf[(addr + AOUT_DATA_1)] = 0;
-			
-			if (ao->mode == 0){
-				bus->wr_buf[(addr + AOUT_HIGH)] = 0;
-			}
-			
+			bus->wr_buf[(addr + AOUT_HIGH)] = 0;			
 			continue;
 		}
 		
@@ -949,10 +942,7 @@ static void write_aout (bus_data_t *bus)
 		// Output data
 		bus->wr_buf[(addr + AOUT_DATA_0)] = val0 & 0xFF;
 		bus->wr_buf[(addr + AOUT_DATA_1)] = val1 & 0xFF;
-		
-		if (ao->mode == 0){
-			bus->wr_buf[(addr + AOUT_HIGH)] = AOUT_ENABLE | ((val1 >> 6) & 0x0D) | ((val0 >> 8) & 0x03);
-		}
+		bus->wr_buf[(addr + AOUT_HIGH)] = AOUT_ENABLE | ((val1 >> 6) & 0x0D) | ((val0 >> 8) & 0x03);
 	}
 }
 
@@ -962,7 +952,7 @@ static void write_aout (bus_data_t *bus)
 // Get the EPP base address of the requested module ID and number. Read / write dependant
 static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 {
-	int n, r_addr, w_addr, id, cnt, si;
+	int n, r_addr, w_addr, id, cnt;
 	
 	r_addr = 0x01; // EPP read / write addresses are starting at 0x01 (0x00 is Module ID stuff only)
 	w_addr = 0x01;
@@ -970,21 +960,20 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 	
 	// Loop through all possible locations
 	for (n = 0; n < SLOT_SIZE; n++){
-		id = bus->rd_buf[n];
-		si = id & MODULE_SIMPLE_BIT;
+		id = bus->rd_buf[n] & MODULE_ID_BITS;
 		
 		// Check for end marker
-		if ((id & MODULE_VALID_BIT) == 0){
+		if (id == MODULE_ID_END){
 			rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: Can not find requested Module number\n");
 			return -1;
 		}
 		
 		// Found a correct ID?
-		if ((id & MODULE_ID_BITS) == moduleid){
+		if (id == moduleid){
 			// Found requested module number
 			if (cnt == number){
 				// Set the found values
-				switch (id & MODULE_ID_BITS){
+				switch (id){
 					case MODULE_ID_END:
 						rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: Found END Module\n");
 						return -1;
@@ -996,23 +985,15 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 						
 					case MODULE_ID_DOUT:
 						bus->dout[number].wr_addr = w_addr;
-						bus->dout[number].mode = si;
 						break;
 						
 					case MODULE_ID_STEPENC:
-						if ((si != 0) && (number == 0)){
-							rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: Stepencoder No. 0,8,15,... can't be in \"Simple\" mode\n");
-							return -1;
-						}
-						
 						bus->stepenc[number].rd_addr = r_addr;
 						bus->stepenc[number].wr_addr = w_addr;
-						bus->stepenc[number].mode = si;
 						break;
 						
 					case MODULE_ID_AOUT:
 						bus->aout[number].wr_addr = w_addr;
-						bus->aout[number].mode = si;
 						break;
 						
 					default:
@@ -1028,7 +1009,7 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 		}
 		
 		// Count the addresses
-		switch (id & MODULE_ID_BITS){
+		switch (id){
 			case MODULE_ID_END:
 				rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: Found END Module\n");
 				return -1;
@@ -1041,35 +1022,21 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 				
 			case MODULE_ID_DOUT:
 				r_addr += MODULE_RD_DOUT;
-				
-				if (si){ // Simple mode?
-					w_addr += MODULE_WRS_DOUT;
-				}
-				else {
-					w_addr += MODULE_WR_DOUT;
-				}
+				w_addr += MODULE_WR_DOUT;
 				break;
 				
 			case MODULE_ID_STEPENC:
-				if (si){ // Simple mode?
-					r_addr += MODULE_RDS_STEPENC;
-					w_addr += MODULE_WRS_STEPENC;
+				r_addr += MODULE_RD_STEPENC;
+				w_addr += MODULE_WR_STEPENC;
+				
+				if ((cnt % 8) == 0){ // The first and every 8th Stepencoder has an Encoder Index register
+					r_addr++;
 				}
-				else {
-					r_addr += MODULE_RD_STEPENC;
-					w_addr += MODULE_WR_STEPENC;
-				}				
 				break;
 				
 			case MODULE_ID_AOUT:
 				r_addr += MODULE_RD_AOUT;
-				
-				if (si){ // Simple mode?	
-					w_addr += MODULE_WRS_AOUT;
-				}
-				else {
-					w_addr += MODULE_WR_AOUT;
-				}				
+				w_addr += MODULE_WR_AOUT;
 				break;
 				
 			default:
@@ -1172,7 +1139,7 @@ static int export_din (bus_data_t *bus)
 // Export all digital outputs to the HAL
 static int export_dout (bus_data_t *bus)
 {
-    int cnt, retval, n, id, pinnr, lastwr;
+    int cnt, retval, n, id, pinnr;
 	dout_t *dou;
 
 	cnt = count_modules_id(bus, MODULE_ID_DOUT);
@@ -1204,13 +1171,6 @@ static int export_dout (bus_data_t *bus)
 			return retval;
 		}
 		
-		if (dou->mode == 0){
-			lastwr = DOUT_ENABLE;
-		}
-		else {
-			lastwr = DOUT_DATA;
-		}
-		
 		SelWrt(0, dou->wr_addr, port_addr[bus->busnum]); // Set all outputs to low
 		
 		for (n = 0; n < 8; n++){
@@ -1233,20 +1193,11 @@ static int export_dout (bus_data_t *bus)
 			// Count Dout pins
 			pinnr++;
 		}
-		
-		// Output enable pin, only in "Normal" mode
-		if (dou->mode == 0){
-			retval = hal_pin_bit_newf(HAL_IN, &(dou->enable), comp_id, "oshwdrv.%d.dout.%02d-%02d.enable", bus->busnum, (pinnr - 8), (pinnr - 1));
-			
-			if (retval != 0) {
-				return retval;
-			}
-		}
 	}
 	
 	// Extend the EPP write addresses, if needed
-	if (bus->write_end_addr < (dou->wr_addr + lastwr)){
-		bus->write_end_addr = dou->wr_addr + lastwr;
+	if (bus->write_end_addr < dou->wr_addr){
+		bus->write_end_addr = dou->wr_addr;
 	}
 	
     return 0;
@@ -1255,25 +1206,25 @@ static int export_dout (bus_data_t *bus)
 // Export all Stepencoders to the HAL
 static int export_stepencoder (bus_data_t *bus)
 {
-    int cnt, retval, id, num, lastwr, lastrd;
-	stepenc_t *se, *se2;
+    int cnt, retval, id;
+	stepenc_t *se;
 
 	cnt = count_modules_id(bus, MODULE_ID_STEPENC);
-    bus->num_stepenc = cnt;
-    rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Exporting Stepencoders %d\n", cnt);
+	bus->num_stepenc = cnt;
+	rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Exporting Stepencoders %d\n", cnt);
 	
 	// Return if no module was found
 	if (cnt < 1){
 		return 0;
 	}
 	
-    // Allocate shared memory for the digital output structs
-    bus->stepenc = hal_malloc(cnt * sizeof(stepenc_t));
+	// Allocate shared memory for the digital output structs
+	bus->stepenc = hal_malloc(cnt * sizeof(stepenc_t));
     
-    if (bus->stepenc == 0) {
-        rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: hal_malloc() failed\n");
-        return -1;
-    }
+	if (bus->stepenc == 0) {
+		rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: hal_malloc() failed\n");
+		return -1;
+	}
     
 	for (id = 0; id < cnt; id++){
 		// Loop through all modules found
@@ -1282,15 +1233,6 @@ static int export_stepencoder (bus_data_t *bus)
 		
 		if (retval != 0){
 			return retval;
-		}
-		
-		if (se->mode == 0){
-			lastwr = STEPENC_SETUP;
-			lastrd = STEPENC_ENC_INDEX;
-		}
-		else {
-			lastwr = STEPENC_GEN_HI;
-			lastrd = STEPENC_ENC_HIGH;
 		}
 		
 		// Export Stepgen HAL pins
@@ -1333,40 +1275,29 @@ static int export_stepencoder (bus_data_t *bus)
 			return retval;
 		}
 	
-		// Export these Stepgen HAL pins only if this module is in "Normal" mode
-		if (se->mode == 0){
-			// Stepgen setup time parameter
-			retval = hal_param_u32_newf(HAL_RW, &(se->step_setup_time), comp_id, "oshwdrv.%d.stepenc.%02d.step-setup-time", bus->busnum, id);
-			
-			if (retval != 0){
-				return retval;
-			}
-			/* 10uS default setup time */
-			se->step_setup_time = 10000;
-			
-			// Stepgen step puls width
-			retval = hal_param_u32_newf(HAL_RW, &(se->step_pulse_width), comp_id, "oshwdrv.%d.stepenc.%02d.step-pulse-width", bus->busnum, id);
-			
-			if (retval != 0){
-				return retval;
-			}
-			/* 4uS default pulse width */
-			se->step_pulse_width = 4000;
+		// Stepgen setup time parameter
+		retval = hal_param_u32_newf(HAL_RW, &(se->step_setup_time), comp_id, "oshwdrv.%d.stepenc.%02d.step-setup-time", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
 		}
-		else {
-			// In "Simple" mode find the corresponding Stepencoder in "Normal" mode
-			for (num = (id - 1); num >= 0; num--){
-				se2 = &(bus->stepenc[num]);
-				
-				// Found the next Stepencoder in "Normal" mode
-				if (se2->mode == 0){
-					break;
-				}
-			}
-			
-			se->master = num;
-			se->master_index = 1 << (id - num);
+		/* 10uS default setup time */
+		se->step_setup_time = 10000;
+		se->last_setup_time = 0;
+		
+		// Stepgen step puls width
+		retval = hal_param_u32_newf(HAL_RW, &(se->step_pulse_width), comp_id, "oshwdrv.%d.stepenc.%02d.step-pulse-width", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
 		}
+		/* 4uS default pulse width */
+		se->step_pulse_width = 4000;
+		se->last_pulse_width = 0;
+			
+		// Set the corresponding Stepencoder for the Encoder Index register
+		se->master = (id - (id % 8));
+		se->master_index = 0x01 << (id % 8);
 		
 		// Export Encoder HAL pins
 		// Encoder raw position
@@ -1426,13 +1357,15 @@ static int export_stepencoder (bus_data_t *bus)
 	}
 	
 	// Extend the EPP read addresses, if needed
-	if (bus->read_end_addr < (se->rd_addr + lastrd)){
-		bus->read_end_addr = se->rd_addr + lastrd;
+	if (bus->read_end_addr < (se->rd_addr + STEPENC_ENC_HIGH + 1)){
+		bus->read_end_addr = se->rd_addr + STEPENC_ENC_HIGH + 1; // The first Stepencoder has always an Encoder Index register
 	}
-
+	
+	bus->read_end_addr += (cnt / 8); // Add a register every 8th Stepencoders
+	
 	// Extend the EPP write addresses, if needed
-	if (bus->write_end_addr < (se->wr_addr + lastwr)){
-		bus->write_end_addr = se->wr_addr + lastwr;
+	if (bus->write_end_addr < (se->wr_addr + STEPENC_GEN_HI)){
+		bus->write_end_addr = se->wr_addr + STEPENC_GEN_HI;
 	}
 	
 	return 0;
@@ -1441,7 +1374,7 @@ static int export_stepencoder (bus_data_t *bus)
 // Export all Aout to the HAL
 static int export_aout (bus_data_t *bus)
 {
-    int cnt, retval, id, lastwr;
+    int cnt, retval, id;
 	aout_t *ao;
 
 	cnt = count_modules_id(bus, MODULE_ID_AOUT);
@@ -1468,13 +1401,6 @@ static int export_aout (bus_data_t *bus)
 		
 		if (retval != 0){
 			return retval;
-		}
-		
-		if (ao->mode == 0){
-			lastwr = AOUT_HIGH;
-		}
-		else {
-			lastwr = AOUT_DATA_1;
 		}
 		
 		// Export Aout HAL pins
@@ -1529,8 +1455,8 @@ static int export_aout (bus_data_t *bus)
 	}
 	
 	// Extend the EPP write addresses, if needed
-	if (bus->write_end_addr < (ao->wr_addr + lastwr)){
-		bus->write_end_addr = ao->wr_addr + lastwr;
+	if (bus->write_end_addr < (ao->wr_addr + AOUT_HIGH)){
+		bus->write_end_addr = ao->wr_addr + AOUT_HIGH;
 	}
 	
 	return 0;
