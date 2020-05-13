@@ -112,6 +112,10 @@ MODULE_LICENSE("GPL");
 #define MODULE_WR_AOUT		0x03
 #define MODULE_RD_AIN		0x03
 #define MODULE_WR_AIN		0x00
+#define MODULE_RD_PWMO		0x00
+#define MODULE_WR_PWMO		0x02
+#define MODULE_RD_JOG		0x02
+#define MODULE_WR_JOG		0x01
 
 // Din address offsets
 #define DIN_DATA			0x00
@@ -183,6 +187,31 @@ MODULE_LICENSE("GPL");
 #define AIN_HBITS_0			0x0F
 #define AIN_HBITS_1			0xF0
 
+// PWMo address offsets
+#define PWMO_PULSE_LOW		0x00
+#define PWMO_PULSE_HIGH		0x01
+#define PWMO_PERIOD_LOW		0x00
+#define PWMO_PERIOD_HIGH	0x01
+
+// PWMo hardware limits
+#define PWMO_MIN_FREQ		152.6
+#define PWMO_MAX_FREQ		300000.0
+#define PWMO_MIN_PERIOD		0.0
+#define PWMO_MAX_PERIOD		1.0
+
+// Jog-Encoder address offsets
+#define JOG_COUNT_LOW		0x00
+#define JOG_COUNT_HIGH		0x01
+#define JOG_CONTROL			0x00
+
+// Jog-Encoder Bits
+#define JOG_CLEAR			0x20
+#define JOG_LATCH			0x40
+
+// Template address offsets
+// Template Bits
+// Template hardware limits
+
 /***********************************************************************
 *                       STRUCTURE DEFINITIONS                          *
 ************************************************************************/
@@ -236,6 +265,27 @@ typedef struct aout_s {
     hal_float_t   scale1;	// Scaling 1 parameter (Volt to PWM duty cycle)
 } aout_t;
 
+// This structure contains the runtime data for a PWM output 
+typedef struct pwmo_s {
+    unsigned char wr_addr;			// Base address for writing data
+	hal_bit_t     *enable;			// Enable pin
+    hal_float_t   *pulswidth;		// Output value (0 - 100%)
+    hal_float_t   frequency;		// Frequency of the PWM output
+	hal_float_t   last_frequency;	// Last PWM frequency written
+	unsigned int  divisor;			// Current divisor (MODULE_CLOCK / frequency)
+} pwmo_t;
+
+// This structure contains the runtime data for a Jog-Encoder 
+typedef struct jog_s {
+    unsigned char rd_addr;	// Base address for reading data
+	unsigned char wr_addr;	// Base address for writing data
+	hal_bit_t     *clear;	// Clear the encoder counter
+    hal_s32_t     *count;	// Encoder raw (unscaled) encoder counts
+    hal_s32_t     *delta;	// Encoder raw (unscaled) delta counts since last read
+    hal_float_t   scale;	// Encoder scaling parameter (counts to position)
+    hal_float_t   *value;	// Encoder scaled value
+} jog_t;
+
 // This structure contains the runtime data for one complete EPP bus
 typedef struct bus_data_s {
 	int busnum;							// Index of parport[] this struct belongs to
@@ -251,6 +301,10 @@ typedef struct bus_data_s {
     unsigned char num_stepenc;			// Number of stepencoder modules
     aout_t        *aout;				// Ptr to shared memory data for aout
     unsigned char num_aout;				// Number of aout modules
+    pwmo_t        *pwmo;				// Ptr to shared memory data for pwmo
+    unsigned char num_pwmo;				// Number of pwmo modules
+	jog_t         *jog;					// Ptr to shared memory data for Jog-Encoders
+    unsigned char num_jog;				// Number of jog modules
 } bus_data_t;
 
 /***********************************************************************
@@ -275,11 +329,14 @@ static void read_all (void *arg, long period);
 static void write_all (void *arg, long period);
 static void read_din (bus_data_t *bus);
 static void write_dout (bus_data_t *bus);
-static void send_strobe_stepenc (bus_data_t *bus);
+static void send_strobe (bus_data_t *bus);
 static void read_stepenc (bus_data_t *bus);
 static unsigned int ns2cp (hal_u32_t *pns, unsigned int min_ns, unsigned int max_ns);
 static void write_stepenc (bus_data_t *bus);
 static void write_aout (bus_data_t *bus);
+static void write_pwmo (bus_data_t *bus);
+static void read_jog (bus_data_t *bus);
+static void write_jog (bus_data_t *bus);
 
 /***********************************************************************
 *                  LOCAL FUNCTION DECLARATIONS                         *
@@ -290,6 +347,8 @@ static int export_din (bus_data_t *bus);
 static int export_dout (bus_data_t *bus);
 static int export_stepencoder (bus_data_t *bus);
 static int export_aout (bus_data_t *bus);
+static int export_pwmo (bus_data_t *bus);
+static int export_jog (bus_data_t *bus);
 
 /***********************************************************************
 *                  REALTIME I/O FUNCTION DECLARATIONS                  *
@@ -372,6 +431,10 @@ int rtapi_app_main (void)
 		bus->stepenc = NULL;
 		bus->num_aout = 0;
 		bus->aout = NULL;
+		bus->num_pwmo = 0;
+		bus->pwmo = NULL;
+		bus->num_jog = 0;
+		bus->jog = NULL;
 		
 		// Read the Module IDs at this bus
 		rv = read_module_ids(bus);
@@ -387,6 +450,8 @@ int rtapi_app_main (void)
 		rv += export_dout(bus);
 		rv += export_stepencoder(bus);
 		rv += export_aout(bus);
+		rv += export_pwmo(bus);
+		rv += export_jog(bus);
 		
 		rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Last read address %d\n", bus->read_end_addr);
 		rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Last write address %d\n", bus->write_end_addr);
@@ -503,10 +568,8 @@ static void read_all (void *arg, long period)
         return;
     }
     
-	// Send a latch strobe to the stepencoders, if exist
-	if (bus->stepenc != NULL){
-		send_strobe_stepenc(bus);
-	}
+	// Send a latch strobe to the stepencoders and or jog encoders
+	send_strobe(bus);
 	
 	// Fetch all data from EPP to cache
 	bus->rd_buf[1] = SelRead(0x01, port_addr[bus->busnum], epp_dir[bus->busnum]);
@@ -518,6 +581,7 @@ static void read_all (void *arg, long period)
 	// Call all functions for read (input data)
 	read_din(bus);
 	read_stepenc(bus);
+	read_jog(bus);
 }
 
 static void write_all(void *arg, long period)
@@ -537,6 +601,8 @@ static void write_all(void *arg, long period)
 	write_dout(bus);
 	write_stepenc(bus);
 	write_aout(bus);
+	write_pwmo(bus);
+	write_jog(bus);
 	
 	// Write data from cache to EPP
 	SelWrt(bus->wr_buf[1], 0x01, port_addr[bus->busnum]);
@@ -606,20 +672,34 @@ static void write_dout (bus_data_t *bus)
 	}
 }
 
-// Send a strobe signal to the first Stepencoder
-static void send_strobe_stepenc (bus_data_t *bus)
+// Send a strobe signal to the first Stepencoder or jog encoder
+static void send_strobe (bus_data_t *bus)
 {
 	int addr;
 	stepenc_t *se;
+	jog_t *jo;
 	
-	se = &(bus->stepenc[0]);
-	
-	// Get the address of the register
-	addr = se->wr_addr + STEPENC_CONTROL;
-	
-	// Generate a positve edge on the encoder latch Bit to load all encoder counter values at the same time
-	SelWrt((bus->wr_buf[addr] | STEPENC_ENC_LATCH), addr, port_addr[bus->busnum]);
-	SelWrt(bus->wr_buf[addr], addr, port_addr[bus->busnum]);
+	// Send a latch strobe to the stepencoders, if exist
+	if (bus->stepenc != NULL){
+		se = &(bus->stepenc[0]);
+		
+		// Get the address of the register
+		addr = se->wr_addr + STEPENC_CONTROL;
+		
+		// Generate a positve edge on the encoder latch Bit to load all encoder counter values at the same time
+		SelWrt((bus->wr_buf[addr] | STEPENC_ENC_LATCH), addr, port_addr[bus->busnum]);
+		SelWrt(bus->wr_buf[addr], addr, port_addr[bus->busnum]);		
+	}
+	else if (bus->jog != NULL){
+		jo = &(bus->jog[0]);
+		
+		// Get the address of the register
+		addr = jo->wr_addr + JOG_CONTROL;
+		
+		// Generate a positve edge on the encoder latch Bit to load all jog encoder counter values at the same time
+		SelWrt((bus->wr_buf[addr] | JOG_LATCH), addr, port_addr[bus->busnum]);
+		SelWrt(bus->wr_buf[addr], addr, port_addr[bus->busnum]);		
+	}
 }
 
 static void read_stepenc (bus_data_t *bus)
@@ -637,7 +717,7 @@ static void read_stepenc (bus_data_t *bus)
 	for (n = 0; n < bus->num_stepenc; n++){
 		se = &(bus->stepenc[n]);
 		addr = se->rd_addr;
-				
+		
 		// Get the new position (in counts)
 		newpos = (signed long)bus->rd_buf[(addr + STEPENC_ENC_LOW)];
 		newpos += ((signed long)(bus->rd_buf[(addr + STEPENC_ENC_MID1)]) << 8);
@@ -946,6 +1026,142 @@ static void write_aout (bus_data_t *bus)
 		bus->wr_buf[(addr + AOUT_DATA_0)] = val0 & 0xFF;
 		bus->wr_buf[(addr + AOUT_DATA_1)] = val1 & 0xFF;
 		bus->wr_buf[(addr + AOUT_HIGH)] = AOUT_ENABLE | ((val1 >> 6) & 0x0D) | ((val0 >> 8) & 0x03);
+	}
+}
+
+static void write_pwmo (bus_data_t *bus)
+{
+	int n, addr;
+	pwmo_t *pw;
+	unsigned int divisor, period;
+	
+	// Test to make sure it hasn't been freed
+	if (bus->pwmo == NULL){
+		return;
+	}
+	
+	// Loop through all PWMo modules
+	for (n = 0; n < bus->num_pwmo; n++){
+		pw = &(bus->stepenc[n]);
+		addr = pw->wr_addr;
+		
+		// PWM frequency changed?
+		if (pw->frequency != pw->last_frequency){
+			// Switch to static data area
+			MODULE_STATIC_AREA;
+			
+			// Check limits
+			if (pw->frequency < PWMO_MIN_FREQ){
+				pw->frequency = PWMO_MIN_FREQ;
+			}
+			else if (pw->frequency > PWMO_MAX_FREQ){
+				pw->frequency = PWMO_MAX_FREQ;
+			}
+			
+			// Calculate new divisor and return the real PWM frequency (due to rounding)
+			divisor = (unsigned int)(MODULE_CLOCK / pw->frequency);
+			pw->divisor = divisor;
+			pw->frequency = (hal_float_t)(MODULE_CLOCK / divisor);
+			
+			// Save new frequency value
+			pw->last_frequency = pw->frequency;
+			SelWrt((divisor & 0xFF), (addr + PWMO_PERIOD_LOW), port_addr[bus->busnum]);
+			divisor >>= 8;
+			SelWrt((divisor & 0xFF), (addr + PWMO_PERIOD_HIGH), port_addr[bus->busnum]);
+			
+			// Switch back to normal data area
+			MODULE_NORMAL_AREA;
+		}
+		
+		// Enable pin?
+		if (*(pw->enable) == 0){
+			bus->wr_buf[(addr + PWMO_PULSE_LOW)] = 0;
+			bus->wr_buf[(addr + PWMO_PULSE_HIGH)] = 0;
+		}
+		else {
+			// Check limits
+			if (*(pw->pulswidth) < PWMO_MIN_PERIOD){
+				*(pw->pulswidth) = PWMO_MIN_PERIOD;
+			}
+			else if (*(pw->pulswidth) > PWMO_MAX_PERIOD){
+				*(pw->pulswidth) = PWMO_MAX_PERIOD;
+			}
+			
+			// Calculate new period
+			period = (unsigned int)(pw->divisor * (*(pw->pulswidth)));
+			bus->wr_addr[(addr + PWMO_PULSE_LOW)] = period & 0xFF;
+			period >>= 8;
+			bus->wr_addr[(addr + PWMO_PULSE_HIGH)] = period & 0xFF;
+		}
+	}
+}
+
+static void read_jog (bus_data_t *bus)
+{
+	int n, addr;
+	signed long newpos;
+	jog_t *jo;
+	
+	// Test to make sure it hasn't been freed
+	if (bus->jog == NULL){
+		return;
+	}
+	
+	// Loop through all Jog-Encoders modules
+	for (n = 0; n < bus->num_jog; n++){
+		jo = &(bus->jog[n]);
+		addr = jo->rd_addr;
+		
+		// Get the new position (in counts)
+		newpos = (signed long)bus->rd_buf[(addr + JOG_COUNT_LOW)];
+		newpos += ((signed long)(bus->rd_buf[(addr + JOG_COUNT_HIGH)]) << 8);
+		
+		// Set HAL delta, count pins
+		*(jo->delta) = newpos - *(jo->count);
+		*(jo->count) = newpos;
+		
+		// Limit HAL enc_scale pin
+		if (jo->scale < 0.0){
+			if (jo->scale > -EPSILON)
+				jo->scale = -1.0;
+		}
+		else {
+			if (jo->scale < EPSILON)
+				jo->scale = 1.0;
+		}
+		
+		// Set HAL value pin
+		*(jo->value) = (hal_s32_t)newpos / jo->scale;
+	}
+}
+
+static void write_jog (bus_data_t *bus)
+{
+	int n, addr;
+	jog_t *jo;
+	unsigned char control_byte;
+	
+	// Test to make sure it hasn't been freed
+	if (bus->jog == NULL){
+		return;
+	}
+	
+	// Loop through all Jog-Encoders modules
+	for (n = 0; n < bus->num_jog; n++){
+		jo = &(bus->jog[n]);
+		addr = jo->wr_addr;
+		
+		control_byte = bus->wr_buf[(addr + JOG_CONTROL)];
+		
+		// Clear the jog encoder counter?
+		if (*(jo->clear) == 0){
+			control_byte &= ~JOG_CLEAR;
+		}
+		else {
+			control_byte |= JOG_CLEAR;
+		}
+		
+		bus->wr_buf[(addr + JOG_CONTROL)] = control_byte;
 	}
 }
 
@@ -1380,7 +1596,7 @@ static int export_aout (bus_data_t *bus)
 {
     int cnt, retval, id;
 	aout_t *ao;
-
+	
 	cnt = count_modules_id(bus, MODULE_ID_AOUT);
     bus->num_aout = cnt;
     rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Exporting Aout %d\n", cnt);
@@ -1461,6 +1677,155 @@ static int export_aout (bus_data_t *bus)
 	// Extend the EPP write addresses, if needed
 	if (bus->write_end_addr < (ao->wr_addr + AOUT_HIGH)){
 		bus->write_end_addr = ao->wr_addr + AOUT_HIGH;
+	}
+	
+	return 0;
+}
+
+static int export_pwmo (bus_data_t *bus)
+{
+    int cnt, retval, id;
+	pwmo_t *pw;
+
+	cnt = count_modules_id(bus, MODULE_ID_PWM);
+    bus->num_pwmo = cnt;
+    rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Exporting PWMo %d\n", cnt);
+	
+	// Return if no module was found
+	if (cnt < 1){
+		return 0;
+	}
+	
+    // Allocate shared memory for the digital output structs
+    bus->pwmo = hal_malloc(cnt * sizeof(pwmo_t));
+    
+    if (bus->pwmo == 0) {
+        rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: hal_malloc() failed\n");
+        return -1;
+    }
+    
+	for (id = 0; id < cnt; id++){
+		// Loop through all modules found
+		pw = &(bus->pwmo[id]);
+		retval = module_base_addr(bus, MODULE_ID_PWM, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Export PWMo HAL pins
+		// PWMo enable pin
+		retval = hal_pin_bit_newf(HAL_IN, &(pw->enable), comp_id, "oshwdrv.%d.pwmout.%02d.enable", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// PWMo pulswidth pin
+		retval = hal_pin_float_newf(HAL_IN, &(pw->pulswidth), comp_id, "oshwdrv.%d.pwmout.%02d.pulswidth", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// PWMo frequency parameter
+		retval = hal_param_float_newf(HAL_RW, &(pw->frequency), comp_id, "oshwdrv.%d.pwmout.%02d.frequency", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		pw->last_frequency = 0.0;
+	}
+	
+	// Extend the EPP write addresses, if needed
+	if (bus->write_end_addr < (pw->wr_addr + PWMO_PULSE_HIGH)){
+		bus->write_end_addr = pw->wr_addr + PWMO_PULSE_HIGH;
+	}
+	
+	return 0;
+}
+
+static int export_jog (bus_data_t *bus)
+{
+    int cnt, retval, id;
+	jog_t *jo;
+
+	cnt = count_modules_id(bus, MODULE_ID_JOGENC);
+    bus->num_jog = cnt;
+    rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Exporting Jog %d\n", cnt);
+	
+	// Return if no module was found
+	if (cnt < 1){
+		return 0;
+	}
+	
+    // Allocate shared memory for the digital output structs
+    bus->jog = hal_malloc(cnt * sizeof(jog_t));
+    
+    if (bus->jog == 0) {
+        rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: hal_malloc() failed\n");
+        return -1;
+    }
+    
+	for (id = 0; id < cnt; id++){
+		// Loop through all modules found
+		jo = &(bus->jog[id]);
+		retval = module_base_addr(bus, MODULE_ID_JOGENC, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Export Jog-Encoder HAL pins
+		// Jog clear pin
+		retval = hal_pin_bit_newf(HAL_IN, &(jo->clear), comp_id, "oshwdrv.%d.jog.%02d.clear", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Jog raw position
+		retval = hal_pin_s32_newf(HAL_OUT, &(jo->count), comp_id, "oshwdrv.%d.jog.%02d.count", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Jog raw delta
+		retval = hal_pin_s32_newf(HAL_OUT, &(jo->delta), comp_id, "oshwdrv.%d.jog.%02d.delta", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Jog scale parameter
+		retval = hal_param_float_newf(HAL_RW, &(jo->scale), comp_id, "oshwdrv.%d.jog.%02d.scale", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Jog value pin
+		retval = hal_pin_float_newf(HAL_IN, &(jo->value), comp_id, "oshwdrv.%d.jog.%02d.value", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Clear encoder counter
+		SelWrt(JOG_CLEAR, (jo->wr_addr + JOG_CONTROL), port_addr[bus->busnum]);
+		SelWrt(0, (jo->wr_addr + JOG_CONTROL), port_addr[bus->busnum]);
+	}
+	
+	// Extend the EPP read addresses, if needed
+	if (bus->read_end_addr < (jo->rd_addr + JOG_COUNT_HIGH)){
+		bus->read_end_addr = jo->rd_addr + JOG_COUNT_HIGH;
+	}
+	
+	// Extend the EPP write addresses, if needed
+	if (bus->write_end_addr < (jo->wr_addr + JOG_CONTROL)){
+		bus->write_end_addr = jo->wr_addr + JOG_CONTROL;
 	}
 	
 	return 0;
