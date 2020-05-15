@@ -282,8 +282,6 @@ typedef struct jog_s {
 	hal_bit_t     *clear;	// Clear the encoder counter
     hal_s32_t     *count;	// Encoder raw (unscaled) encoder counts
     hal_s32_t     *delta;	// Encoder raw (unscaled) delta counts since last read
-    hal_float_t   scale;	// Encoder scaling parameter (counts to position)
-    hal_float_t   *value;	// Encoder scaled value
 } jog_t;
 
 // This structure contains the runtime data for one complete EPP bus
@@ -1124,19 +1122,6 @@ static void read_jog (bus_data_t *bus)
 		// Set HAL delta, count pins
 		*(jo->delta) = newpos - *(jo->count);
 		*(jo->count) = newpos;
-		
-		// Limit HAL enc_scale pin
-		if (jo->scale < 0.0){
-			if (jo->scale > -EPSILON)
-				jo->scale = -1.0;
-		}
-		else {
-			if (jo->scale < EPSILON)
-				jo->scale = 1.0;
-		}
-		
-		// Set HAL value pin
-		*(jo->value) = newpos / jo->scale;
 	}
 }
 
@@ -1160,10 +1145,10 @@ static void write_jog (bus_data_t *bus)
 		
 		// Clear the jog encoder counter?
 		if (*(jo->clear) == 0){
-			control_byte &= ~JOG_CLEAR;
+			control_byte |= JOG_CLEAR; // Clear at 0 to simplify HAL wiring
 		}
 		else {
-			control_byte |= JOG_CLEAR;
+			control_byte &= ~JOG_CLEAR;
 		}
 		
 		bus->wr_buf[(addr + JOG_CONTROL)] = control_byte;
@@ -1822,20 +1807,6 @@ static int export_jog (bus_data_t *bus)
 		
 		// Jog raw delta
 		retval = hal_pin_s32_newf(HAL_OUT, &(jo->delta), comp_id, "oshwdrv.%d.jog.%02d.delta", bus->busnum, id);
-		
-		if (retval != 0){
-			return retval;
-		}
-		
-		// Jog scale parameter
-		retval = hal_param_float_newf(HAL_RW, &(jo->scale), comp_id, "oshwdrv.%d.jog.%02d.scale", bus->busnum, id);
-		
-		if (retval != 0){
-			return retval;
-		}
-		
-		// Jog value pin
-		retval = hal_pin_float_newf(HAL_IN, &(jo->value), comp_id, "oshwdrv.%d.jog.%02d.value", bus->busnum, id);
 		
 		if (retval != 0){
 			return retval;
