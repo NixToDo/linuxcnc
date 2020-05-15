@@ -85,7 +85,7 @@ MODULE_LICENSE("GPL");
 #define MODULE_ID_AIN		0x05
 #define MODULE_ID_WATCHDOG	0x06
 #define MODULE_ID_MSPI		0x07
-#define MODULE_ID_PWM		0x08
+#define MODULE_ID_PWMO		0x08
 #define MODULE_ID_JOGENC	0x09
 
 // Module ID addresses
@@ -196,8 +196,8 @@ MODULE_LICENSE("GPL");
 // PWMo hardware limits
 #define PWMO_MIN_FREQ		152.6
 #define PWMO_MAX_FREQ		300000.0
-#define PWMO_MIN_PERIOD		0.0
-#define PWMO_MAX_PERIOD		1.0
+#define PWMO_MIN_PERIOD		0.002
+#define PWMO_MAX_PERIOD		0.999
 
 // Jog-Encoder address offsets
 #define JOG_COUNT_LOW		0x00
@@ -1042,7 +1042,7 @@ static void write_pwmo (bus_data_t *bus)
 	
 	// Loop through all PWMo modules
 	for (n = 0; n < bus->num_pwmo; n++){
-		pw = &(bus->stepenc[n]);
+		pw = &(bus->pwmo[n]);
 		addr = pw->wr_addr;
 		
 		// PWM frequency changed?
@@ -1088,10 +1088,10 @@ static void write_pwmo (bus_data_t *bus)
 			}
 			
 			// Calculate new period
-			period = (unsigned int)(pw->divisor * (*(pw->pulswidth)));
-			bus->wr_addr[(addr + PWMO_PULSE_LOW)] = period & 0xFF;
+			period = (unsigned int)((pw->divisor * (*(pw->pulswidth))) - 1.0);
+			bus->wr_buf[(addr + PWMO_PULSE_LOW)] = period & 0xFF;
 			period >>= 8;
-			bus->wr_addr[(addr + PWMO_PULSE_HIGH)] = period & 0xFF;
+			bus->wr_buf[(addr + PWMO_PULSE_HIGH)] = period & 0xFF;
 		}
 	}
 }
@@ -1099,7 +1099,7 @@ static void write_pwmo (bus_data_t *bus)
 static void read_jog (bus_data_t *bus)
 {
 	int n, addr;
-	signed long newpos;
+	hal_s32_t newpos;
 	jog_t *jo;
 	
 	// Test to make sure it hasn't been freed
@@ -1113,8 +1113,13 @@ static void read_jog (bus_data_t *bus)
 		addr = jo->rd_addr;
 		
 		// Get the new position (in counts)
-		newpos = (signed long)bus->rd_buf[(addr + JOG_COUNT_LOW)];
-		newpos += ((signed long)(bus->rd_buf[(addr + JOG_COUNT_HIGH)]) << 8);
+		newpos =  (hal_s32_t)(bus->rd_buf[(addr + JOG_COUNT_LOW)]);
+		newpos += (((hal_s32_t)(bus->rd_buf[(addr + JOG_COUNT_HIGH)])) << 8);
+		
+		// Read a negative number?
+		if (bus->rd_buf[(addr + JOG_COUNT_HIGH)] & 0x80){
+			newpos += 0xFFFF0000;
+		}
 		
 		// Set HAL delta, count pins
 		*(jo->delta) = newpos - *(jo->count);
@@ -1131,7 +1136,7 @@ static void read_jog (bus_data_t *bus)
 		}
 		
 		// Set HAL value pin
-		*(jo->value) = (hal_s32_t)newpos / jo->scale;
+		*(jo->value) = newpos / jo->scale;
 	}
 }
 
@@ -1171,12 +1176,13 @@ static void write_jog (bus_data_t *bus)
 // Get the EPP base address of the requested module ID and number. Read / write dependant
 static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 {
-	int n, r_addr, w_addr, id, cnt;
+	int n, r_addr, w_addr, id, cnt, cntse;
 	
 	// EPP read / write addresses are starting at 0x01 (0x00 is Module ID stuff only)
 	r_addr = 0x01;
 	w_addr = 0x01;
 	cnt = 0;
+	cntse = 0;
 	
 	// Loop through all possible locations
 	for (n = 0; n < SLOT_SIZE; n++){
@@ -1216,12 +1222,22 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 						bus->aout[number].wr_addr = w_addr;
 						break;
 						
+					case MODULE_ID_PWMO:
+						bus->pwmo[number].wr_addr = w_addr;
+						break;
+					
+					case MODULE_ID_JOGENC:
+						bus->jog[number].rd_addr = r_addr;
+						bus->jog[number].wr_addr = w_addr;
+						break;
+						
 					default:
 						rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: Found unknown module ID\n");
 						return -1;
 						break;
 				}
 				
+				//rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: READ: %d WRITE: %d\n", r_addr, w_addr);
 				return 0;
 			}
 			
@@ -1249,9 +1265,11 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 				r_addr += MODULE_RD_STEPENC;
 				w_addr += MODULE_WR_STEPENC;
 				
-				if (((cnt - 1) % 8) == 0){ // The first and every 8th Stepencoder has an Encoder Index register
+				if ((cntse % 8) == 0){ // The first and every 8th Stepencoder has an Encoder Index register
 					r_addr++;
 				}
+				
+				cntse++;
 				break;
 				
 			case MODULE_ID_AOUT:
@@ -1259,6 +1277,16 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 				w_addr += MODULE_WR_AOUT;
 				break;
 				
+			case MODULE_ID_PWMO:
+				r_addr += MODULE_RD_PWMO;
+				w_addr += MODULE_WR_PWMO;
+				break;
+			
+			case MODULE_ID_JOGENC:
+				r_addr += MODULE_RD_JOG;
+				w_addr += MODULE_WR_JOG;
+				break;
+			
 			default:
 				rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: Found unknown module ID: %d\n", id);
 				return -1;
@@ -1687,7 +1715,7 @@ static int export_pwmo (bus_data_t *bus)
     int cnt, retval, id;
 	pwmo_t *pw;
 
-	cnt = count_modules_id(bus, MODULE_ID_PWM);
+	cnt = count_modules_id(bus, MODULE_ID_PWMO);
     bus->num_pwmo = cnt;
     rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Exporting PWMo %d\n", cnt);
 	
@@ -1707,7 +1735,7 @@ static int export_pwmo (bus_data_t *bus)
 	for (id = 0; id < cnt; id++){
 		// Loop through all modules found
 		pw = &(bus->pwmo[id]);
-		retval = module_base_addr(bus, MODULE_ID_PWM, id);
+		retval = module_base_addr(bus, MODULE_ID_PWMO, id);
 		
 		if (retval != 0){
 			return retval;
