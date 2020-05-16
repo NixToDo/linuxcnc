@@ -112,6 +112,8 @@ MODULE_LICENSE("GPL");
 #define MODULE_WR_AOUT		0x03
 #define MODULE_RD_AIN		0x03
 #define MODULE_WR_AIN		0x00
+#define MODULE_RD_WDOG		0x01
+#define MODULE_WR_WDOG		0x01
 #define MODULE_RD_PWMO		0x00
 #define MODULE_WR_PWMO		0x02
 #define MODULE_RD_JOG		0x02
@@ -186,6 +188,20 @@ MODULE_LICENSE("GPL");
 // Ain Bits
 #define AIN_HBITS_0			0x0F
 #define AIN_HBITS_1			0xF0
+
+// Watchdog address offsets
+#define WATCHDOG_CONFIG		0x00
+#define WATCHDOG_STATUS		0x00
+
+// Watchdog Bits
+#define WATCHDOG_CLEAR		0x01
+#define WATCHDOG_ID			0x7E
+#define WATCHDOG_RESET		0x80
+#define WATCHDOG_TIMEOUT	0x01
+#define WATCHDOG_ACTIVE		0x80
+
+// Watchdog values
+#define WATCHDOG_ID_VALUE	0x53
 
 // PWMo address offsets
 #define PWMO_PULSE_LOW		0x00
@@ -284,6 +300,14 @@ typedef struct jog_s {
     hal_s32_t     *delta;	// Encoder raw (unscaled) delta counts since last read
 } jog_t;
 
+// This structure contains the runtime data for the watchdog
+typedef struct watchdog_s {
+    unsigned char rd_addr;	// Base address for reading data
+	unsigned char wr_addr;	// Base address for writing data
+	hal_bit_t     *timeout;	// A timeout indicator
+	hal_bit_t     *estop;	// Emergency Stop input
+} watchdog_t;
+
 // This structure contains the runtime data for one complete EPP bus
 typedef struct bus_data_s {
 	int busnum;							// Index of parport[] this struct belongs to
@@ -303,6 +327,7 @@ typedef struct bus_data_s {
     unsigned char num_pwmo;				// Number of pwmo modules
 	jog_t         *jog;					// Ptr to shared memory data for Jog-Encoders
     unsigned char num_jog;				// Number of jog modules
+	watchdog_t    *watchdog;			// Ptr to shared memory data for Watchdog
 } bus_data_t;
 
 /***********************************************************************
@@ -335,6 +360,8 @@ static void write_aout (bus_data_t *bus);
 static void write_pwmo (bus_data_t *bus);
 static void read_jog (bus_data_t *bus);
 static void write_jog (bus_data_t *bus);
+static void read_watchdog (bus_data_t *bus);
+static void write_watchdog (bus_data_t *bus);
 
 /***********************************************************************
 *                  LOCAL FUNCTION DECLARATIONS                         *
@@ -347,6 +374,7 @@ static int export_stepencoder (bus_data_t *bus);
 static int export_aout (bus_data_t *bus);
 static int export_pwmo (bus_data_t *bus);
 static int export_jog (bus_data_t *bus);
+static int export_watchdog (bus_data_t *bus);
 
 /***********************************************************************
 *                  REALTIME I/O FUNCTION DECLARATIONS                  *
@@ -433,6 +461,7 @@ int rtapi_app_main (void)
 		bus->pwmo = NULL;
 		bus->num_jog = 0;
 		bus->jog = NULL;
+		bus->watchdog = NULL;
 		
 		// Read the Module IDs at this bus
 		rv = read_module_ids(bus);
@@ -450,6 +479,7 @@ int rtapi_app_main (void)
 		rv += export_aout(bus);
 		rv += export_pwmo(bus);
 		rv += export_jog(bus);
+		rv += export_watchdog(bus);
 		
 		rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Last read address %d\n", bus->read_end_addr);
 		rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Last write address %d\n", bus->write_end_addr);
@@ -580,6 +610,7 @@ static void read_all (void *arg, long period)
 	read_din(bus);
 	read_stepenc(bus);
 	read_jog(bus);
+	read_watchdog(bus);
 }
 
 static void write_all(void *arg, long period)
@@ -601,6 +632,7 @@ static void write_all(void *arg, long period)
 	write_aout(bus);
 	write_pwmo(bus);
 	write_jog(bus);
+	write_watchdog(bus);
 	
 	// Write data from cache to EPP
 	SelWrt(bus->wr_buf[1], 0x01, port_addr[bus->busnum]);
@@ -1155,6 +1187,79 @@ static void write_jog (bus_data_t *bus)
 	}
 }
 
+static void read_watchdog (bus_data_t *bus)
+{
+	int n, addr, status;
+	watchdog_t *wd;
+	
+	// Test to make sure it hasn't been freed
+	if (bus->watchdog == NULL){
+		return;
+	}
+	
+	wd = &(bus->watchdog);
+	addr = wd->rd_addr;
+	
+	// Get the status Bits
+	status = (bus->rd_buf[(addr + WATCHDOG_STATUS)]);
+	
+	// Timeout occured?
+	if (status & WATCHDOG_TIMEOUT){
+		*(wd->timeout) = 1;
+	}
+	else {
+		*(wd->timeout) = 0;
+	}
+}
+
+static void write_watchdog (bus_data_t *bus)
+{
+	int n, addr, status;
+	watchdog_t *wd;
+	
+	// Test to make sure it hasn't been freed
+	if (bus->watchdog == NULL){
+		return;
+	}
+	
+	wd = &(bus->watchdog);
+	addr = wd->wr_addr;
+	
+	// Get the status Bits
+	status = (bus->rd_buf[(wd->rd_addr + WATCHDOG_STATUS)]);
+	
+	// Watchdog inactive?
+	if (status & WATCHDOG_ACTIVE){
+		// Start it
+		bus->wr_buf[(addr + WATCHDOG_CONFIG)] = WATCHDOG_RESET | WATCHDOG_ID_VALUE | WATCHDOG_CLEAR;
+		return;
+	}
+	
+	// Has a timeout occured?
+	if (*(wd->timeout) != 0){
+		// Yes, wait until estop is low again
+		bus->wr_buf[(addr + WATCHDOG_CONFIG)] = WATCHDOG_ID_VALUE; // Write low to Reset and Clear Bits
+		
+		if (*(wd->estop) == 0){
+			// Reset timeout
+			bus->wr_buf[(addr + WATCHDOG_CONFIG)] = WATCHDOG_RESET | WATCHDOG_ID_VALUE;
+		}
+		
+		return;
+	}
+	
+	// Estop inactive?
+	if (*(wd->estop) == 0){
+		// Yes, clear watchdog counter (toggle Clear Bit)
+		if ((bus->wr_buf[(addr + WATCHDOG_CONFIG)] & WATCHDOG_CLEAR) == 0){
+			bus->wr_buf[(addr + WATCHDOG_CONFIG)] = WATCHDOG_ID_VALUE | WATCHDOG_CLEAR;
+		}
+		else {
+			bus->wr_buf[(addr + WATCHDOG_CONFIG)] = WATCHDOG_ID_VALUE;
+		}
+	}
+}
+
 /***********************************************************************
 *                   LOCAL FUNCTION DEFINITIONS                         *
 ************************************************************************/
@@ -1205,6 +1310,11 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 						
 					case MODULE_ID_AOUT:
 						bus->aout[number].wr_addr = w_addr;
+						break;
+						
+					case MODULE_ID_WATCHDOG:
+						bus->watchdog.rd_addr = r_addr;
+						bus->watchdog.wr_addr = w_addr;
 						break;
 						
 					case MODULE_ID_PWMO:
@@ -1260,6 +1370,11 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 			case MODULE_ID_AOUT:
 				r_addr += MODULE_RD_AOUT;
 				w_addr += MODULE_WR_AOUT;
+				break;
+				
+			case MODULE_ID_WATCHDOG:
+				r_addr += MODULE_RD_WDOG;
+				w_addr += MODULE_WR_WDOG;
 				break;
 				
 			case MODULE_ID_PWMO:
@@ -1322,7 +1437,7 @@ static int export_din (bus_data_t *bus)
 		return 0;
 	}
 	
-    // Alocate shared memory for all digital input structs
+    // Alocate shared memory
     bus->din = hal_malloc(cnt * sizeof(din_t));
     
     if (bus->din == 0) {
@@ -1384,7 +1499,7 @@ static int export_dout (bus_data_t *bus)
 		return 0;
 	}
 	
-    // Allocate shared memory for the digital output structs
+    // Allocate shared memory
     bus->dout = hal_malloc(cnt * sizeof(dout_t));
     
     if (bus->dout == 0) {
@@ -1451,7 +1566,7 @@ static int export_stepencoder (bus_data_t *bus)
 		return 0;
 	}
 	
-	// Allocate shared memory for the digital output structs
+	// Allocate shared memory
 	bus->stepenc = hal_malloc(cnt * sizeof(stepenc_t));
     
 	if (bus->stepenc == 0) {
@@ -1619,7 +1734,7 @@ static int export_aout (bus_data_t *bus)
 		return 0;
 	}
 	
-    // Allocate shared memory for the digital output structs
+    // Allocate shared memory
     bus->aout = hal_malloc(cnt * sizeof(aout_t));
     
     if (bus->aout == 0) {
@@ -1709,7 +1824,7 @@ static int export_pwmo (bus_data_t *bus)
 		return 0;
 	}
 	
-    // Allocate shared memory for the digital output structs
+    // Allocate shared memory
     bus->pwmo = hal_malloc(cnt * sizeof(pwmo_t));
     
     if (bus->pwmo == 0) {
@@ -1773,7 +1888,7 @@ static int export_jog (bus_data_t *bus)
 		return 0;
 	}
 	
-    // Allocate shared memory for the digital output structs
+    // Allocate shared memory
     bus->jog = hal_malloc(cnt * sizeof(jog_t));
     
     if (bus->jog == 0) {
@@ -1825,6 +1940,71 @@ static int export_jog (bus_data_t *bus)
 	// Extend the EPP write addresses, if needed
 	if (bus->write_end_addr < (jo->wr_addr + JOG_CONTROL)){
 		bus->write_end_addr = jo->wr_addr + JOG_CONTROL;
+	}
+	
+	return 0;
+}
+
+static int export_watchdog (bus_data_t *bus)
+{
+    int cnt, retval, id;
+	watchdog_t *wd;
+
+	cnt = count_modules_id(bus, MODULE_ID_WATCHDOG);
+    
+	// Return if more than one module was found
+	if (cnt > 1){
+		return -1;
+	}
+	
+    rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Exporting Jog %d\n", cnt);
+	
+	// Return if no module was found
+	if (cnt < 1){
+		return 0;
+	}
+	
+    // Allocate shared memory
+    bus->watchdog = hal_malloc(sizeof(watchdog_t));
+    
+    if (bus->watchdog == 0) {
+        rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: hal_malloc() failed\n");
+        return -1;
+    }
+    
+	wd = &(bus->watchdog);
+	retval = module_base_addr(bus, MODULE_ID_WATCHDOG, id);
+	
+	if (retval != 0){
+		return retval;
+	}
+	
+	// Export Watchdog HAL pins
+	// Timeout pin
+	retval = hal_pin_bit_newf(HAL_IN, &(wd->timeout), comp_id, "oshwdrv.%d.watchdog.timeout", bus->busnum, id);
+	
+	if (retval != 0){
+		return retval;
+	}
+	
+	// Estop pin
+	retval = hal_pin_bit_newf(HAL_OUT, &(wd->estop), comp_id, "oshwdrv.%d.watchdog.estop", bus->busnum, id);
+	
+	if (retval != 0){
+		return retval;
+	}
+	
+	// Clear Config register
+	SelWrt(0, (wd->wr_addr + WATCHDOG_CONFIG), port_addr[bus->busnum]);
+	
+	// Extend the EPP read addresses, if needed
+	if (bus->read_end_addr < (wd->rd_addr + WATCHDOG_STATUS)){
+		bus->read_end_addr = wd->rd_addr + WATCHDOG_STATUS;
+	}
+	
+	// Extend the EPP write addresses, if needed
+	if (bus->write_end_addr < (wd->wr_addr + WATCHDOG_CONFIG)){
+		bus->write_end_addr = wd->wr_addr + WATCHDOG_CONFIG;
 	}
 	
 	return 0;
