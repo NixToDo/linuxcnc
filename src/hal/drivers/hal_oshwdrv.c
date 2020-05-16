@@ -201,7 +201,7 @@ MODULE_LICENSE("GPL");
 #define WATCHDOG_ACTIVE		0x80
 
 // Watchdog values
-#define WATCHDOG_ID_VALUE	0x53
+#define WATCHDOG_ID_VALUE	0x56
 
 // PWMo address offsets
 #define PWMO_PULSE_LOW		0x00
@@ -1189,7 +1189,7 @@ static void write_jog (bus_data_t *bus)
 
 static void read_watchdog (bus_data_t *bus)
 {
-	int n, addr, status;
+	int addr, status;
 	watchdog_t *wd;
 	
 	// Test to make sure it hasn't been freed
@@ -1197,7 +1197,7 @@ static void read_watchdog (bus_data_t *bus)
 		return;
 	}
 	
-	wd = &(bus->watchdog);
+	wd = bus->watchdog;
 	addr = wd->rd_addr;
 	
 	// Get the status Bits
@@ -1214,7 +1214,7 @@ static void read_watchdog (bus_data_t *bus)
 
 static void write_watchdog (bus_data_t *bus)
 {
-	int n, addr, status;
+	int addr, status;
 	watchdog_t *wd;
 	
 	// Test to make sure it hasn't been freed
@@ -1222,14 +1222,14 @@ static void write_watchdog (bus_data_t *bus)
 		return;
 	}
 	
-	wd = &(bus->watchdog);
+	wd = bus->watchdog;
 	addr = wd->wr_addr;
 	
 	// Get the status Bits
 	status = (bus->rd_buf[(wd->rd_addr + WATCHDOG_STATUS)]);
 	
 	// Watchdog inactive?
-	if (status & WATCHDOG_ACTIVE){
+	if ((status & WATCHDOG_ACTIVE) == 0){
 		// Start it
 		bus->wr_buf[(addr + WATCHDOG_CONFIG)] = WATCHDOG_RESET | WATCHDOG_ID_VALUE | WATCHDOG_CLEAR;
 		return;
@@ -1240,6 +1240,7 @@ static void write_watchdog (bus_data_t *bus)
 		// Yes, wait until estop is low again
 		bus->wr_buf[(addr + WATCHDOG_CONFIG)] = WATCHDOG_ID_VALUE; // Write low to Reset and Clear Bits
 		
+		// Estop inactive?
 		if (*(wd->estop) == 0){
 			// Reset timeout
 			bus->wr_buf[(addr + WATCHDOG_CONFIG)] = WATCHDOG_RESET | WATCHDOG_ID_VALUE;
@@ -1313,8 +1314,8 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 						break;
 						
 					case MODULE_ID_WATCHDOG:
-						bus->watchdog.rd_addr = r_addr;
-						bus->watchdog.wr_addr = w_addr;
+						bus->watchdog->rd_addr = r_addr;
+						bus->watchdog->wr_addr = w_addr;
 						break;
 						
 					case MODULE_ID_PWMO:
@@ -1722,7 +1723,7 @@ static int export_stepencoder (bus_data_t *bus)
 // Export all Aout to the HAL
 static int export_aout (bus_data_t *bus)
 {
-    int cnt, retval, id;
+    int cnt, retval, id, out;
 	aout_t *ao;
 	
 	cnt = count_modules_id(bus, MODULE_ID_AOUT);
@@ -1742,6 +1743,8 @@ static int export_aout (bus_data_t *bus)
         return -1;
     }
     
+    out = 0;
+    
 	for (id = 0; id < cnt; id++){
 		// Loop through all modules found
 		ao = &(bus->aout[id]);
@@ -1753,49 +1756,51 @@ static int export_aout (bus_data_t *bus)
 		
 		// Export Aout HAL pins
 		// Aout enable pin
-		retval = hal_pin_bit_newf(HAL_IN, &(ao->enable), comp_id, "oshwdrv.%d.adcout.%02d.enable", bus->busnum, id);
+		retval = hal_pin_bit_newf(HAL_IN, &(ao->enable), comp_id, "oshwdrv.%d.adcout.%02d-%02d.enable", bus->busnum, out, (out + 1));
 		
 		if (retval != 0){
 			return retval;
 		}
 		
 		// Aout value 0 pin
-		retval = hal_pin_float_newf(HAL_IN, &(ao->value0), comp_id, "oshwdrv.%d.adcout.%02d.value-0", bus->busnum, id);
-		
-		if (retval != 0){
-			return retval;
-		}
-		
-		// Aout value 1 pin
-		retval = hal_pin_float_newf(HAL_IN, &(ao->value1), comp_id, "oshwdrv.%d.adcout.%02d.value-1", bus->busnum, id);
+		retval = hal_pin_float_newf(HAL_IN, &(ao->value0), comp_id, "oshwdrv.%d.adcout.%02d.value", bus->busnum, out);
 		
 		if (retval != 0){
 			return retval;
 		}
 		
 		// Aout offset 0 parameter
-		retval = hal_param_float_newf(HAL_RW, &(ao->offset0), comp_id, "oshwdrv.%d.adcout.%02d.offset-0", bus->busnum, id);
-		
-		if (retval != 0){
-			return retval;
-		}
-		
-		// Aout offset 1 parameter
-		retval = hal_param_float_newf(HAL_RW, &(ao->offset1), comp_id, "oshwdrv.%d.adcout.%02d.offset-1", bus->busnum, id);
+		retval = hal_param_float_newf(HAL_RW, &(ao->offset0), comp_id, "oshwdrv.%d.adcout.%02d.offset", bus->busnum, out);
 		
 		if (retval != 0){
 			return retval;
 		}
 		
 		// Aout scale 0 parameter
-		retval = hal_param_float_newf(HAL_RW, &(ao->scale0), comp_id, "oshwdrv.%d.adcout.%02d.scale-0", bus->busnum, id);
+		retval = hal_param_float_newf(HAL_RW, &(ao->scale0), comp_id, "oshwdrv.%d.adcout.%02d.scale", bus->busnum, out);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		out++;
+		
+		// Aout value 1 pin
+		retval = hal_pin_float_newf(HAL_IN, &(ao->value1), comp_id, "oshwdrv.%d.adcout.%02d.value", bus->busnum, out);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Aout offset 1 parameter
+		retval = hal_param_float_newf(HAL_RW, &(ao->offset1), comp_id, "oshwdrv.%d.adcout.%02d.offset", bus->busnum, out);
 		
 		if (retval != 0){
 			return retval;
 		}
 		
 		// Aout scale 1 parameter
-		retval = hal_param_float_newf(HAL_RW, &(ao->scale1), comp_id, "oshwdrv.%d.adcout.%02d.scale-1", bus->busnum, id);
+		retval = hal_param_float_newf(HAL_RW, &(ao->scale1), comp_id, "oshwdrv.%d.adcout.%02d.scale", bus->busnum, out);
 		
 		if (retval != 0){
 			return retval;
@@ -1947,7 +1952,7 @@ static int export_jog (bus_data_t *bus)
 
 static int export_watchdog (bus_data_t *bus)
 {
-    int cnt, retval, id;
+    int cnt, retval;
 	watchdog_t *wd;
 
 	cnt = count_modules_id(bus, MODULE_ID_WATCHDOG);
@@ -1957,7 +1962,7 @@ static int export_watchdog (bus_data_t *bus)
 		return -1;
 	}
 	
-    rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Exporting Jog %d\n", cnt);
+    rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Exporting Watchdog %d\n", cnt);
 	
 	// Return if no module was found
 	if (cnt < 1){
@@ -1972,8 +1977,8 @@ static int export_watchdog (bus_data_t *bus)
         return -1;
     }
     
-	wd = &(bus->watchdog);
-	retval = module_base_addr(bus, MODULE_ID_WATCHDOG, id);
+	wd = bus->watchdog;
+	retval = module_base_addr(bus, MODULE_ID_WATCHDOG, 0);
 	
 	if (retval != 0){
 		return retval;
@@ -1981,14 +1986,14 @@ static int export_watchdog (bus_data_t *bus)
 	
 	// Export Watchdog HAL pins
 	// Timeout pin
-	retval = hal_pin_bit_newf(HAL_IN, &(wd->timeout), comp_id, "oshwdrv.%d.watchdog.timeout", bus->busnum, id);
+	retval = hal_pin_bit_newf(HAL_OUT, &(wd->timeout), comp_id, "oshwdrv.%d.watchdog.timeout", bus->busnum);
 	
 	if (retval != 0){
 		return retval;
 	}
 	
 	// Estop pin
-	retval = hal_pin_bit_newf(HAL_OUT, &(wd->estop), comp_id, "oshwdrv.%d.watchdog.estop", bus->busnum, id);
+	retval = hal_pin_bit_newf(HAL_IN, &(wd->estop), comp_id, "oshwdrv.%d.watchdog.estop", bus->busnum);
 	
 	if (retval != 0){
 		return retval;
