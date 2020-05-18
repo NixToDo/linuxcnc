@@ -64,10 +64,11 @@ MODULE_LICENSE("GPL");
 /***********************************************************************
 *                DEFINES (MOSTLY REGISTER ADDRESSES)                   *
 ************************************************************************/
-#define MAX_BUS 	 3			// Max number of parports (EPP busses)
-#define SLOT_SIZE    32			// Max EPP addresses used
-#define EPSILON      1e-20		// Limit value
-#define MODULE_CLOCK 10000000.0	// 10 MHz
+#define MAX_BUS 	 	3			// Max number of parports (EPP busses)
+#define SLOT_SIZE    	32			// Max EPP addresses used
+#define EPSILON      	1e-20		// Limit value
+#define MODULE_CLOCK	10000000.0	// 10 MHz
+#define SECONDARY_CLOCK 2500000.0	// 2.5 MHz
 
 // EPP parport addresses
 #define SPPDATA(addr)     addr
@@ -154,6 +155,7 @@ MODULE_LICENSE("GPL");
 #define STEPENC_ENC_INX_0	0x01
 
 // Stepencoder hardware limits
+#define STEPENC_CLOCK		MODULE_CLOCK
 #define STEPENC_WIDTH_MIN	100
 #define STEPENC_WIDTH_MAX	25500
 #define STEPENC_SETUP_MIN	100
@@ -210,8 +212,9 @@ MODULE_LICENSE("GPL");
 #define PWMO_PERIOD_HIGH	0x01
 
 // PWMo hardware limits
-#define PWMO_MIN_FREQ		152.6
-#define PWMO_MAX_FREQ		300000.0
+#define PWMO_CLOCK			SECONDARY_CLOCK
+#define PWMO_MIN_FREQ		(PWMO_CLOCK / 65535)
+#define PWMO_MAX_FREQ		(PWMO_CLOCK / 100)
 #define PWMO_MIN_PERIOD		0.002
 #define PWMO_MAX_PERIOD		0.999
 
@@ -288,7 +291,7 @@ typedef struct pwmo_s {
     hal_float_t   *pulswidth;		// Output value (0 - 100%)
     hal_float_t   frequency;		// Frequency of the PWM output
 	hal_float_t   last_frequency;	// Last PWM frequency written
-	unsigned int  divisor;			// Current divisor (MODULE_CLOCK / frequency)
+	unsigned int  divisor;			// Current divisor (Clock / frequency)
 } pwmo_t;
 
 // This structure contains the runtime data for a Jog-Encoder 
@@ -352,7 +355,7 @@ static void read_all (void *arg, long period);
 static void write_all (void *arg, long period);
 static void read_din (bus_data_t *bus);
 static void write_dout (bus_data_t *bus);
-static void send_strobe (bus_data_t *bus);
+//static void send_strobe (bus_data_t *bus);
 static void read_stepenc (bus_data_t *bus);
 static unsigned int ns2cp (hal_u32_t *pns, unsigned int min_ns, unsigned int max_ns);
 static void write_stepenc (bus_data_t *bus);
@@ -597,7 +600,9 @@ static void read_all (void *arg, long period)
     }
     
 	// Send a latch strobe to the stepencoders and or jog encoders
-	send_strobe(bus);
+	//send_strobe(bus);
+	// Will be done by FPGA firmware. (Start reading at address 1 will trigger it.)
+	// So no module with an encoder function should be placed at address 1!
 	
 	// Fetch all data from EPP to cache
 	bus->rd_buf[1] = SelRead(0x01, port_addr[bus->busnum], epp_dir[bus->busnum]);
@@ -703,6 +708,7 @@ static void write_dout (bus_data_t *bus)
 }
 
 // Send a strobe signal to the first Stepencoder or jog encoder
+/*
 static void send_strobe (bus_data_t *bus)
 {
 	int addr;
@@ -730,7 +736,7 @@ static void send_strobe (bus_data_t *bus)
 		SelWrt((bus->wr_buf[addr] | JOG_LATCH), addr, port_addr[bus->busnum]);
 		SelWrt(bus->wr_buf[addr], addr, port_addr[bus->busnum]);		
 	}
-}
+}*/
 
 static void read_stepenc (bus_data_t *bus)
 {
@@ -847,7 +853,7 @@ static void write_stepenc (bus_data_t *bus)
 		}
 		
 		// Calculate max frequency
-		max_freq = MODULE_CLOCK / (se->last_pulse_width + (STEPENC_WIDTH_MIN / 100));
+		max_freq = STEPENC_CLOCK / (se->last_pulse_width + (STEPENC_WIDTH_MIN / 100));
 		
 		// Validate the HAL scale value
 		if (se->step_scale < 0.0){
@@ -905,11 +911,11 @@ static void write_stepenc (bus_data_t *bus)
 		// Apply limits
 		if (freq > max_freq){
 			freq = max_freq;
-			divisor = MODULE_CLOCK / freq;
+			divisor = STEPENC_CLOCK / freq;
 			// Subtract step pulse width 
 			divisor -= ns2cp(&(se->step_pulse_width), STEPENC_WIDTH_MIN, STEPENC_WIDTH_MAX);
 		}
-		else if (freq < (MODULE_CLOCK / ((1 << STEPENC_CNT_BITS) - 1))){
+		else if (freq < (STEPENC_CLOCK / ((1 << STEPENC_CNT_BITS) - 1))){
 			// Frequency would result in a divisor greater than 2^24-1
 			freq = 0.0;
 			divisor = (1 << STEPENC_CNT_BITS) - 1;
@@ -919,9 +925,9 @@ static void write_stepenc (bus_data_t *bus)
 		}
 		else {
 			// Calculate divisor, round to nearest instead of truncating
-			divisor = (MODULE_CLOCK / freq) + 0.5;
+			divisor = (STEPENC_CLOCK / freq) + 0.5;
 			// Calculate actual frequency (due to divisor roundoff)
-			freq = MODULE_CLOCK / divisor;
+			freq = STEPENC_CLOCK / divisor;
 			// Subtract step pulse width 
 			divisor -= ns2cp(&(se->step_pulse_width), STEPENC_WIDTH_MIN, STEPENC_WIDTH_MAX);
 		}
@@ -1089,9 +1095,9 @@ static void write_pwmo (bus_data_t *bus)
 			}
 			
 			// Calculate new divisor and return the real PWM frequency (due to rounding)
-			divisor = (unsigned int)(MODULE_CLOCK / pw->frequency);
+			divisor = (unsigned int)(PWMO_CLOCK / pw->frequency);
 			pw->divisor = divisor;
-			pw->frequency = (hal_float_t)(MODULE_CLOCK / divisor);
+			pw->frequency = (hal_float_t)(PWMO_CLOCK / divisor);
 			
 			// Save new frequency value
 			pw->last_frequency = pw->frequency;

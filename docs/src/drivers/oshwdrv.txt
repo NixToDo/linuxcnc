@@ -37,7 +37,7 @@ Currently following functions are available:
 * 'Digital outputs' -
    In groups of 8 Bits. An disable signal may be used to switch all outputs off simustanaly.
 * 'Step generators' -
-   It produces the required timing of the step and directio signals.
+   It produces the required timing of the step and direction signals.
    The timing of the step pules (Step puls width) and the time before / after an
    direction change (Setup time) are programmeble from 100ns to 25500ns.
    The step output frequency may vary from ~0.59 Hz (10 MHz / (2^24-1)) to 5 MHz.
@@ -60,7 +60,7 @@ In my mind I have some more things:
    The analog inputs are read from external analog to digital converters. (12 Bit resolution)
 * 'SPI master / slave interface' -
    To interface external hardware or to interface the driver board with a computer
-   that does not have a parallel port (e.g. Raspberry Pi).
+   that does not have an parallel port (e.g. Raspberry Pi).
 * 'UART / RS485 / Modbus interface' -
    To interface external hardware.
 
