@@ -7,7 +7,7 @@ A plasma cutting table control component for use with the LinuxCNC V2.8 or later
 
 .I VERSION:
 .br
-0.125 - 2020 May 14
+0.134 - 2020 Jun 09
 
 .I SUMMARY:
 .br
@@ -465,7 +465,10 @@ FUNCTION(_) {
     }
 
     /* calculate arc voltage */
-    arc_voltage = (arc_voltage_in - arc_voltage_offset) * arc_voltage_scale;
+    arc_voltage = (fabs(arc_voltage_in) - arc_voltage_offset) * fabs(arc_voltage_scale);
+    if(arc_voltage < 0 && arc_voltage > -0.5){
+        arc_voltage = 0;
+    }
     if(lowpass_frequency){
         arc_voltage_out += (arc_voltage - arc_voltage_out) * (1 - pow(2.71828, -(2 * M_PI * lowpass_frequency) * fperiod));
     }else{
@@ -667,7 +670,7 @@ FUNCTION(_) {
                     }
                 }
             }else if(float_switch && !float_detected){
-                if(ohmic_attempts == ohmic_max_attempts){
+                if(ohmic_attempts >= ohmic_max_attempts || !ohmic_probe_enable){
                     probe_type = FLOAT;
                     target_sensed = TRUE;
                     probe_force = probe_force_val;
@@ -740,8 +743,7 @@ FUNCTION(_) {
                 if(safe_height == 0){
                     safe_target = offset_max;
                     ohmic_enable = FALSE;
-//                    state = ZERO_HEIGHT;
-                    state = PIERCE_HEIGHT;
+                    state = ZERO_HEIGHT;
                 }else if(offset_counts + safe_min >= offset_max){
                     safe_target = offset_max;
                     rtapi_print_msg(RTAPI_MSG_ERR, "material too high for safe traverse.\n"
@@ -754,13 +756,11 @@ FUNCTION(_) {
                     safe_target = offset_max;
                     safe_height_is_limited = TRUE;
                     ohmic_enable = FALSE;
-//                    state = ZERO_HEIGHT;
-                    state = PIERCE_HEIGHT;
+                    state = ZERO_HEIGHT;
                 }else{
                     safe_target = offset_counts + safe_preferred;
                     ohmic_enable = FALSE;
-//                    state = ZERO_HEIGHT;
-                    state = PIERCE_HEIGHT;
+                    state = ZERO_HEIGHT;
                 }
             }
             break;
