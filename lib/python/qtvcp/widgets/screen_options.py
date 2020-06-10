@@ -27,7 +27,7 @@ from qtvcp.lib.notify import Notify
 from qtvcp.lib.audio_player import Player
 from qtvcp.lib.preferences import Access
 from qtvcp.lib.machine_log import MachineLogger
-from qtvcp.core import Status, Info, Tool
+from qtvcp.core import Status, Info, Tool, Path
 from qtvcp import logger
 
 # Instantiate the libraries with global reference
@@ -43,6 +43,7 @@ NOTICE = Notify()
 MSG = Message()
 INFO = Info()
 TOOL = Tool()
+PATH = Path()
 MLOG = MachineLogger()
 LOG = logger.getLogger(__name__)
 
@@ -52,7 +53,7 @@ except:
     LOG.warning('Sound Player did not load')
 
 # Set the log level for this module
-# LOG.setLevel(logger.INFO) # One of DEBUG, INFO, WARNING, ERROR, CRITICAL
+LOG.setLevel(logger.INFO) # One of DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 
 class ScreenOptions(QtWidgets.QWidget, _HalWidgetBase):
@@ -94,6 +95,7 @@ class ScreenOptions(QtWidgets.QWidget, _HalWidgetBase):
         self.add_tooloffset_dialog = False
         self.add_calculator_dialog = False
         self.add_machinelog_dialog = False
+        self.add_runFromLine_dialog = False
 
         self.pref_filename = '~/.qtvcp_screen_preferences'
         self._default_tab_name = ''
@@ -111,6 +113,7 @@ class ScreenOptions(QtWidgets.QWidget, _HalWidgetBase):
         self._toolOffsetDialogColor = QtGui.QColor(0, 0, 0, 150)
         self._calculatorDialogColor = QtGui.QColor(0, 0, 0, 150)
         self._machineLogDialogColor = QtGui.QColor(0, 0, 0, 150)
+        self._runFromLineDialogColor = QtGui.QColor(0, 0, 0, 150)
 
     # self.QTVCP_INSTANCE_
     # self.HAL_GCOMP_
@@ -155,6 +158,9 @@ class ScreenOptions(QtWidgets.QWidget, _HalWidgetBase):
 
         if self.add_machinelog_dialog:
             self.init_machinelog_dialog()
+
+        if self.add_runFromLine_dialog:
+            self.init_runfromline_dialog()
 
         # Read user preferences
         if self.PREFS_:
@@ -235,13 +241,22 @@ class ScreenOptions(QtWidgets.QWidget, _HalWidgetBase):
 
     # This is called early by qt_makegui.py for access to
     # be able to pass the preference object to ther widgets
-    def _pref_init(self, conf_path):
+    def _pref_init(self):
         if self.use_pref_file:
+            # we prefer INI settings
             if INFO.PREFERENCE_PATH:
                 self.pref_filename = INFO.PREFERENCE_PATH
                 LOG.debug('Switching to Preference File Path from INI: {}'.format(INFO.PREFERENCE_PATH))
-            self.pref_filename = self.pref_filename.replace('CONFIGFOLDER',conf_path)
-            return Access(self.pref_filename), self.pref_filename
+            # substitute for keywords
+            self.pref_filename = self.pref_filename.replace('CONFIGFOLDER',PATH.CONFIGPATH)
+            self.pref_filename = self.pref_filename.replace('WORKINGFOLDER',PATH.WORKINGDIR)
+            # check that there is a directory present
+            dir = os.path.split(str(self.pref_filename))
+            dir = os.path.expanduser(dir[0])
+            if os.path.exists(dir):
+                return Access(self.pref_filename), self.pref_filename
+            else:
+                raise Exception('Cannot find directory: {} for preference file.'.format(dir))
         return None,None
 
     # allow screen option to inject data to the main VCP object (basically the window)
@@ -338,7 +353,6 @@ class ScreenOptions(QtWidgets.QWidget, _HalWidgetBase):
 
     # XEmbed program into tabs
     def add_xembed_tabs(self):
-
         if INFO.GLADEVCP:
             cmd = 'halcmd loadusr -Wn gladevcp gladevcp -c gladevcp -x {XID} %s' %(INFO.GLADEVCP)
             LOG.debug('AXIS style side panel vcp: {} '.format(cmd))
@@ -354,15 +368,19 @@ class ScreenOptions(QtWidgets.QWidget, _HalWidgetBase):
                 LOG.debug('Processing Embedded tab:{}, {}, {}'.format(name,loc,cmd))
                 if loc == 'default':
                     loc = 'rightTab'
-                if isinstance(self.QTVCP_INSTANCE_[loc], QtWidgets.QTabWidget):
-                    tw = QtWidgets.QWidget()
-                    self.QTVCP_INSTANCE_[loc].addTab(tw, name)
-                elif isinstance(self.QTVCP_INSTANCE_[loc], QtWidgets.QStackedWidget):
-                    tw = QtWidgets.QWidget()
-                    self.QTVCP_INSTANCE_[loc].addWidget(tw)
-                else:
-                    LOG.warning('tab location {} is not a Tab or stacked Widget - skipping'.format(loc))
-                    continue
+                try:
+                    if isinstance(self.QTVCP_INSTANCE_[loc], QtWidgets.QTabWidget):
+                        tw = QtWidgets.QWidget()
+                        self.QTVCP_INSTANCE_[loc].addTab(tw, name)
+                    elif isinstance(self.QTVCP_INSTANCE_[loc], QtWidgets.QStackedWidget):
+                        tw = QtWidgets.QWidget()
+                        self.QTVCP_INSTANCE_[loc].addWidget(tw)
+                    else:
+                        LOG.warning('tab location {} is not a Tab or stacked Widget - skipping'.format(loc))
+                        continue
+                except Exception as e:
+                    LOG.warning("problem inserting VCP '{}' to location: {} :\n {}".format(name, loc, e))
+                    return
                 self._embed(cmd,loc,tw)
 
     def _embed(self, cmd,loc,twidget):
@@ -496,6 +514,14 @@ class ScreenOptions(QtWidgets.QWidget, _HalWidgetBase):
         w.machineLogDialog_.hal_init(self.HAL_GCOMP_, self.HAL_NAME_,
              w.machineLogDialog_, w, w.PATHS, self.PREFS_)
         w.machineLogDialog_.overlay_color = self._machineLogDialogColor
+
+    def init_runfromline_dialog(self):
+        from qtvcp.widgets.dialog_widget import RunFromLineDialog
+        w = self.QTVCP_INSTANCE_
+        w.runFromLineDialog_ = RunFromLineDialog()
+        w.runFromLineDialog_.hal_init(self.HAL_GCOMP_, self.HAL_NAME_,
+             w.runFromLineDialog_, w, w.PATHS, self.PREFS_)
+        w.runFromLineDialog_.overlay_color = self._runFromLineDialogColor
 
     ########################################################################
     # This is how designer can interact with our widget properties.
@@ -753,6 +779,19 @@ class ScreenOptions(QtWidgets.QWidget, _HalWidgetBase):
     def set_machineLogDialogColor(self, value):
         self._machineLogDialogColor = value
     machineLog_overlay_color = QtCore.pyqtProperty(QtGui.QColor, get_machineLogDialogColor, set_machineLogDialogColor)
+
+    def set_runFromLineDialog(self, data):
+        self.add_runFromLine_dialog = data
+    def get_runFromLineDialog(self):
+        return self.add_runFromLine_dialog
+    def reset_runFromLineDialog(self):
+        self.add_runFromLine_dialog = False
+    runFromLineDialog_option = QtCore.pyqtProperty(bool, get_runFromLineDialog, set_runFromLineDialog, reset_runFromLineDialog)
+    def get_runFromLineDialogColor(self):
+        return self._runFromLineDialogColor
+    def set_runFromLineDialogColor(self, value):
+        self._runFromLineDialogColor = value
+    runFromLine_overlay_color = QtCore.pyqtProperty(QtGui.QColor, get_runFromLineDialogColor, set_runFromLineDialogColor)
 
     ##############################
     # required boiler code #
