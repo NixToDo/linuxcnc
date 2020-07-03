@@ -1061,7 +1061,7 @@ static void write_aout (bus_data_t *bus)
 		// Output data
 		bus->wr_buf[(addr + AOUT_DATA_0)] = val0 & 0xFF;
 		bus->wr_buf[(addr + AOUT_DATA_1)] = val1 & 0xFF;
-		bus->wr_buf[(addr + AOUT_HIGH)] = AOUT_ENABLE | ((val1 >> 6) & 0x0D) | ((val0 >> 8) & 0x03);
+		bus->wr_buf[(addr + AOUT_HIGH)] = AOUT_ENABLE | ((val1 >> 6) & 0x0C) | ((val0 >> 8) & 0x03);
 	}
 }
 
