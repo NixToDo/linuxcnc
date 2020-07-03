@@ -184,7 +184,9 @@ MODULE_LICENSE("GPL");
 
 // Ain Bits
 #define AIN_HBITS_0			0x0F
+#define AIN_DATA_0_SHIFT	0
 #define AIN_HBITS_1			0xF0
+#define AIN_DATA_1_SHIFT	4
 
 // Watchdog address offsets
 #define WATCHDOG_CONFIG		0x00
@@ -280,6 +282,17 @@ typedef struct aout_s {
     hal_float_t   scale1;	// Scaling 1 parameter (Value to 0 - 10 Volt)
 } aout_t;
 
+// This structure contains the runtime data for two analog inputs (12 Bit ADC) 
+typedef struct ain_s {
+    unsigned char rd_addr;	// Base address for reading data
+	hal_float_t   *value0;	// Input 0 value
+    hal_float_t   offset0;	// Offset 0, will be added to value before scaling
+    hal_float_t   scale0;	// Scaling 0 parameter
+    hal_float_t   *value1;	// Input 1 value
+    hal_float_t   offset1;	// Offset 1, will be added to value before scaling
+    hal_float_t   scale1;	// Scaling 1 parameter
+} ain_t;
+
 // This structure contains the runtime data for a PWM output 
 typedef struct pwmo_s {
     unsigned char wr_addr;			// Base address for writing data
@@ -324,6 +337,8 @@ typedef struct bus_data_s {
     unsigned char num_stepenc;			// Number of stepencoder modules
     aout_t        *aout;				// Ptr to shared memory data for aout
     unsigned char num_aout;				// Number of aout modules
+    ain_t         *ain;					// Ptr to shared memory data for ain
+    unsigned char num_ain;				// Number of ain modules
     pwmo_t        *pwmo;				// Ptr to shared memory data for pwmo
     unsigned char num_pwmo;				// Number of pwmo modules
 	jog_t         *jog;					// Ptr to shared memory data for Jog-Encoders
@@ -353,11 +368,11 @@ static void read_all (void *arg, long period);
 static void write_all (void *arg, long period);
 static void read_din (bus_data_t *bus);
 static void write_dout (bus_data_t *bus);
-//static void send_strobe (bus_data_t *bus);
 static void read_stepenc (bus_data_t *bus);
 static unsigned int ns2cp (hal_u32_t *pns, unsigned int min_ns, unsigned int max_ns);
 static void write_stepenc (bus_data_t *bus);
 static void write_aout (bus_data_t *bus);
+static void read_ain (bus_data_t *bus);
 static void write_pwmo (bus_data_t *bus);
 static void read_jog (bus_data_t *bus);
 static void write_jog (bus_data_t *bus);
@@ -373,6 +388,7 @@ static int export_din (bus_data_t *bus);
 static int export_dout (bus_data_t *bus);
 static int export_stepencoder (bus_data_t *bus);
 static int export_aout (bus_data_t *bus);
+static int export_ain (bus_data_t *bus);
 static int export_pwmo (bus_data_t *bus);
 static int export_jog (bus_data_t *bus);
 static int export_watchdog (bus_data_t *bus);
@@ -478,6 +494,7 @@ int rtapi_app_main (void)
 		rv += export_dout(bus);
 		rv += export_stepencoder(bus);
 		rv += export_aout(bus);
+		rv += export_ain(bus);
 		rv += export_pwmo(bus);
 		rv += export_jog(bus);
 		rv += export_watchdog(bus);
@@ -598,7 +615,6 @@ static void read_all (void *arg, long period)
     }
     
 	// Send a latch strobe to the stepencoders and or jog encoders
-	//send_strobe(bus);
 	// Will be done by FPGA firmware. (Start reading at address 1 will trigger it.)
 	// So no module with an encoder function should be placed at address 1!
 	
@@ -612,6 +628,7 @@ static void read_all (void *arg, long period)
 	// Call all functions for read (input data)
 	read_din(bus);
 	read_stepenc(bus);
+	read_ain(bus);
 	read_jog(bus);
 	read_watchdog(bus);
 }
@@ -704,37 +721,6 @@ static void write_dout (bus_data_t *bus)
 		bus->wr_buf[(dou->wr_addr + DOUT_DATA)] = outdata;
 	}
 }
-
-// Send a strobe signal to the first Stepencoder or jog encoder
-/*
-static void send_strobe (bus_data_t *bus)
-{
-	int addr;
-	stepenc_t *se;
-	jog_t *jo;
-	
-	// Send a latch strobe to the stepencoders, if exist
-	if (bus->stepenc != NULL){
-		se = &(bus->stepenc[0]);
-		
-		// Get the address of the register
-		addr = se->wr_addr + STEPENC_CONTROL;
-		
-		// Generate a positve edge on the encoder latch Bit to load all encoder counter values at the same time
-		SelWrt((bus->wr_buf[addr] | STEPENC_ENC_LATCH), addr, port_addr[bus->busnum]);
-		SelWrt(bus->wr_buf[addr], addr, port_addr[bus->busnum]);		
-	}
-	else if (bus->jog != NULL){
-		jo = &(bus->jog[0]);
-		
-		// Get the address of the register
-		addr = jo->wr_addr + JOG_CONTROL;
-		
-		// Generate a positve edge on the encoder latch Bit to load all jog encoder counter values at the same time
-		SelWrt((bus->wr_buf[addr] | JOG_LATCH), addr, port_addr[bus->busnum]);
-		SelWrt(bus->wr_buf[addr], addr, port_addr[bus->busnum]);		
-	}
-}*/
 
 static void read_stepenc (bus_data_t *bus)
 {
@@ -1027,6 +1013,32 @@ static void write_aout (bus_data_t *bus)
 	}
 }
 
+static void read_ain (bus_data_t *bus)
+{
+	int n, addr;
+	ain_t *ai;
+	unsigned int val0, val1;
+	
+	// Test to make sure it hasn't been freed
+	if (bus->ain == NULL){
+		return;
+	}
+	
+	// Loop through all Aout modules
+	for (n = 0; n < bus->num_ain; n++){
+		ai = &(bus->ain[n]);
+		addr = ai->rd_addr;
+		
+		// Read data
+		val0 = (((bus->rd_buf[(addr + AIN_HIGH)] & AIN_HBITS_0) >> AIN_DATA_0_SHIFT) * 256) + bus->rd_buf[(addr + AIN_DATA_0)];
+		val1 = (((bus->rd_buf[(addr + AIN_HIGH)] & AIN_HBITS_1) >> AIN_DATA_1_SHIFT) * 256) + bus->rd_buf[(addr + AIN_DATA_1)];
+		
+		// Calculate data
+		*(ai->value0) = ((hal_float_t)val0 * ai->scale0) - ai->offset0;
+		*(ai->value1) = ((hal_float_t)val1 * ai->scale1) - ai->offset1;
+	}
+}
+
 static void write_pwmo (bus_data_t *bus)
 {
 	int n, addr;
@@ -1290,6 +1302,10 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 						bus->aout[number].wr_addr = w_addr;
 						break;
 						
+					case MODULE_ID_AIN:
+						bus->ain[number].rd_addr = r_addr;
+						break;
+						
 					case MODULE_ID_WATCHDOG:
 						bus->watchdog->rd_addr = r_addr;
 						bus->watchdog->wr_addr = w_addr;
@@ -1348,6 +1364,11 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 			case MODULE_ID_AOUT:
 				r_addr += MODULE_RD_AOUT;
 				w_addr += MODULE_WR_AOUT;
+				break;
+				
+			case MODULE_ID_AIN:
+				r_addr += MODULE_RD_AIN;
+				w_addr += MODULE_WR_AIN;
 				break;
 				
 			case MODULE_ID_WATCHDOG:
@@ -1792,6 +1813,95 @@ static int export_aout (bus_data_t *bus)
 	return 0;
 }
 
+// Export all Ain to the HAL
+static int export_ain (bus_data_t *bus)
+{
+    int cnt, retval, id, out;
+	ain_t *ai;
+	
+	cnt = count_modules_id(bus, MODULE_ID_AIN);
+    bus->num_ain = cnt;
+    rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Exporting Ain %d\n", cnt);
+	
+	// Return if no module was found
+	if (cnt < 1){
+		return 0;
+	}
+	
+    // Allocate shared memory
+    bus->ain = hal_malloc(cnt * sizeof(ain_t));
+    
+    if (bus->ain == 0) {
+        rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: hal_malloc() failed\n");
+        return -1;
+    }
+    
+    out = 0;
+    
+	for (id = 0; id < cnt; id++){
+		// Loop through all modules found
+		ai = &(bus->ain[id]);
+		retval = module_base_addr(bus, MODULE_ID_AIN, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Export Ain HAL pins
+		// Ain value 0 pin
+		retval = hal_pin_float_newf(HAL_OUT, &(ai->value0), comp_id, "oshwdrv.%d.adcin.%02d.value", bus->busnum, out);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Ain offset 0 parameter
+		retval = hal_param_float_newf(HAL_RW, &(ai->offset0), comp_id, "oshwdrv.%d.adcin.%02d.offset", bus->busnum, out);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Ain scale 0 parameter
+		retval = hal_param_float_newf(HAL_RW, &(ai->scale0), comp_id, "oshwdrv.%d.adcin.%02d.scale", bus->busnum, out);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		out++;
+		
+		// Ain value 1 pin
+		retval = hal_pin_float_newf(HAL_OUT, &(ai->value1), comp_id, "oshwdrv.%d.adcin.%02d.value", bus->busnum, out);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Ain offset 1 parameter
+		retval = hal_param_float_newf(HAL_RW, &(ai->offset1), comp_id, "oshwdrv.%d.adcin.%02d.offset", bus->busnum, out);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Ain scale 1 parameter
+		retval = hal_param_float_newf(HAL_RW, &(ai->scale1), comp_id, "oshwdrv.%d.adcin.%02d.scale", bus->busnum, out);
+		
+		if (retval != 0){
+			return retval;
+		}
+	}
+	
+	// Extend the EPP write addresses, if needed
+	if (bus->read_end_addr < (ai->rd_addr + AIN_HIGH)){
+		bus->read_end_addr = ai->rd_addr + AIN_HIGH;
+	}
+	
+	return 0;
+}
+
+// Export all PWMo to the HAL
 static int export_pwmo (bus_data_t *bus)
 {
     int cnt, retval, id;
@@ -1870,6 +1980,7 @@ static int export_pwmo (bus_data_t *bus)
 	return 0;
 }
 
+// Export all Jog to the HAL
 static int export_jog (bus_data_t *bus)
 {
     int cnt, retval, id;
@@ -1941,6 +2052,7 @@ static int export_jog (bus_data_t *bus)
 	return 0;
 }
 
+// Export all Watchdog to the HAL
 static int export_watchdog (bus_data_t *bus)
 {
     int cnt, retval;
