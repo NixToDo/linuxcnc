@@ -995,7 +995,16 @@ static void write_aout (bus_data_t *bus)
 		// Calculate data
 		val0 = (int)(((*(ao->value0)) + ao->offset0) / (ao->scale0 / AOUT_SCALE_RATIO));
 		val1 = (int)(((*(ao->value1)) + ao->offset1) / (ao->scale1 / AOUT_SCALE_RATIO));
-				
+		
+		// Check for negative slope
+		if (val0 < 0){
+			val0 += 1000;
+		}
+
+		if (val1 < 0){
+			val1 += 1000;
+		}
+		
 		// Limit calculated data
 		if (val0 < AOUT_MIN_OUTPUT){
 			val0 = AOUT_MIN_OUTPUT;
@@ -1074,7 +1083,7 @@ static void write_pwmo (bus_data_t *bus)
 			
 			// Check for negative slope
 			if (val < 0.00001){ // Used to prevent -0.0 as negative number
-				val = val + 100.0;
+				val += 100.0;
 			}
 			
 			// Check limits
