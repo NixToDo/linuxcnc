@@ -188,6 +188,10 @@ MODULE_LICENSE("GPL");
 #define AIN_HBITS_1			0xF0
 #define AIN_DATA_1_SHIFT	4
 
+// Ain hardware scale
+#define AIN_DATA_0_SCALE    ((3.3 / 4096) * (10.0 / 3.3))
+#define AIN_DATA_1_SCALE    ((3.3 / 4096) * (10.0 / 3.3))
+
 // Watchdog address offsets
 #define WATCHDOG_CONFIG		0x00
 #define WATCHDOG_STATUS		0x00
@@ -1034,8 +1038,8 @@ static void read_ain (bus_data_t *bus)
 		val1 = (((bus->rd_buf[(addr + AIN_HIGH)] & AIN_HBITS_1) >> AIN_DATA_1_SHIFT) * 256) + bus->rd_buf[(addr + AIN_DATA_1)];
 		
 		// Calculate data
-		*(ai->value0) = ((hal_float_t)val0 * ai->scale0) - ai->offset0;
-		*(ai->value1) = ((hal_float_t)val1 * ai->scale1) - ai->offset1;
+		*(ai->value0) = ((hal_float_t)val0 * AIN_DATA_0_SCALE * ai->scale0) - ai->offset0;
+		*(ai->value1) = ((hal_float_t)val1 * AIN_DATA_1_SCALE * ai->scale1) - ai->offset1;
 	}
 }
 
