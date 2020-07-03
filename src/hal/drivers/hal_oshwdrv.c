@@ -173,14 +173,9 @@ MODULE_LICENSE("GPL");
 #define AOUT_ENABLE			0x80
 
 // Aout hardware limits
-#define AOUT_MIN_VALUE		0.0
-#define AOUT_MAX_VALUE		10.0
-#define AOUT_MIN_OFFSET		-1.0
-#define AOUT_MAX_OFFSET		1.0
-#define AOUT_MIN_SCALE		0.0
-#define AOUT_MAX_SCALE		200.0
+#define AOUT_SCALE_RATIO    100.0
 #define AOUT_MIN_OUTPUT		0
-#define AOUT_MAX_OUTPUT		1023
+#define AOUT_MAX_OUTPUT		1000
 
 // Ain address offsets
 #define AIN_DATA_0			0x00
@@ -215,8 +210,9 @@ MODULE_LICENSE("GPL");
 #define PWMO_CLOCK			SECONDARY_CLOCK
 #define PWMO_MIN_FREQ		(PWMO_CLOCK / 65535)
 #define PWMO_MAX_FREQ		(PWMO_CLOCK / 100)
-#define PWMO_MIN_PERIOD		0.002
-#define PWMO_MAX_PERIOD		0.999
+#define PWMO_MIN_PERIOD		0.2
+#define PWMO_MAX_PERIOD		99.9
+#define PWMO_SCALE_RATIO    100.0
 
 // Jog-Encoder address offsets
 #define JOG_COUNT_LOW		0x00
@@ -276,19 +272,21 @@ typedef struct stepenc_s {
 typedef struct aout_s {
     unsigned char wr_addr;	// Base address for writing data
 	hal_bit_t     *enable;	// Enable pin
-    hal_float_t   *value0;	// Output 0 value (0 - 10 Volt)
+    hal_float_t   *value0;	// Output 0 value
     hal_float_t   offset0;	// Offset 0, will be added to value before scaling
-    hal_float_t   scale0;	// Scaling 0 parameter (Volt to PWM duty cycle)
+    hal_float_t   scale0;	// Scaling 0 parameter (Value to 0 - 10 Volt)
     hal_float_t   *value1;	// Output 1 value
     hal_float_t   offset1;	// Offset 1, will be added to value before scaling
-    hal_float_t   scale1;	// Scaling 1 parameter (Volt to PWM duty cycle)
+    hal_float_t   scale1;	// Scaling 1 parameter (Value to 0 - 10 Volt)
 } aout_t;
 
 // This structure contains the runtime data for a PWM output 
 typedef struct pwmo_s {
     unsigned char wr_addr;			// Base address for writing data
 	hal_bit_t     *enable;			// Enable pin
-    hal_float_t   *pulswidth;		// Output value (0 - 100%)
+    hal_float_t   *value;			// Output value
+    hal_float_t   offset;			// Offset, will be added to value before scaling
+    hal_float_t   scale;			// Scaling parameter (Value to 0 - 100% PWM duty cycle)
     hal_float_t   frequency;		// Frequency of the PWM output
 	hal_float_t   last_frequency;	// Last PWM frequency written
 	unsigned int  divisor;			// Current divisor (Clock / frequency)
@@ -994,55 +992,10 @@ static void write_aout (bus_data_t *bus)
 			continue;
 		}
 		
-		// Limit value
-		if (*(ao->value0) < AOUT_MIN_VALUE){
-			*(ao->value0) = AOUT_MIN_VALUE;
-		}
-		else if (*(ao->value0) > AOUT_MAX_VALUE){
-			*(ao->value0) = AOUT_MAX_VALUE;
-		}
-		
-		if (*(ao->value1) < AOUT_MIN_VALUE){
-			*(ao->value1) = AOUT_MIN_VALUE;
-		}
-		else if (*(ao->value1) > AOUT_MAX_VALUE){
-			*(ao->value1) = AOUT_MAX_VALUE;
-		}
-		
-		// Limit offest
-		if (ao->offset0 < AOUT_MIN_OFFSET){
-			ao->offset0 = AOUT_MIN_OFFSET;
-		}
-		else if (ao->offset0 > AOUT_MAX_OFFSET){
-			ao->offset0 = AOUT_MAX_OFFSET;
-		}
-		
-		if (ao->offset1 < AOUT_MIN_OFFSET){
-			ao->offset1 = AOUT_MIN_OFFSET;
-		}
-		else if (ao->offset1 > AOUT_MAX_OFFSET){
-			ao->offset1 = AOUT_MAX_OFFSET;
-		}
-		
-		// Limit scale
-		if (ao->scale0 < AOUT_MIN_SCALE){
-			ao->scale0 = AOUT_MIN_SCALE;
-		}
-		else if (ao->scale0 > AOUT_MAX_SCALE){
-			ao->scale0 = AOUT_MAX_SCALE;
-		}
-		
-		if (ao->scale1 < AOUT_MIN_SCALE){
-			ao->scale1 = AOUT_MIN_SCALE;
-		}
-		else if (ao->scale1 > AOUT_MAX_SCALE){
-			ao->scale1 = AOUT_MAX_SCALE;
-		}
-		
 		// Calculate data
-		val0 = (int)(ao->scale0 * (*(ao->value0)) + ao->offset0);
-		val1 = (int)(ao->scale1 * (*(ao->value1)) + ao->offset1);
-		
+		val0 = (int)(((*(ao->value0)) + ao->offset0) / (ao->scale0 / AOUT_SCALE_RATIO));
+		val1 = (int)(((*(ao->value1)) + ao->offset1) / (ao->scale1 / AOUT_SCALE_RATIO));
+				
 		// Limit calculated data
 		if (val0 < AOUT_MIN_OUTPUT){
 			val0 = AOUT_MIN_OUTPUT;
@@ -1069,6 +1022,7 @@ static void write_pwmo (bus_data_t *bus)
 {
 	int n, addr;
 	pwmo_t *pw;
+	float val;
 	unsigned int divisor, period;
 	
 	// Test to make sure it hasn't been freed
@@ -1083,9 +1037,6 @@ static void write_pwmo (bus_data_t *bus)
 		
 		// PWM frequency changed?
 		if (pw->frequency != pw->last_frequency){
-			// Switch to static data area
-			MODULE_STATIC_AREA;
-			
 			// Check limits
 			if (pw->frequency < PWMO_MIN_FREQ){
 				pw->frequency = PWMO_MIN_FREQ;
@@ -1098,6 +1049,9 @@ static void write_pwmo (bus_data_t *bus)
 			divisor = (unsigned int)(PWMO_CLOCK / pw->frequency);
 			pw->divisor = divisor;
 			pw->frequency = (hal_float_t)(PWMO_CLOCK / divisor);
+			
+			// Switch to static data area
+			MODULE_STATIC_AREA;
 			
 			// Save new frequency value
 			pw->last_frequency = pw->frequency;
@@ -1115,16 +1069,24 @@ static void write_pwmo (bus_data_t *bus)
 			bus->wr_buf[(addr + PWMO_PULSE_HIGH)] = 0;
 		}
 		else {
-			// Check limits
-			if (*(pw->pulswidth) < PWMO_MIN_PERIOD){
-				*(pw->pulswidth) = PWMO_MIN_PERIOD;
+			// Calculate data
+			val = ((*(pw->value)) + pw->offset) / pw->scale;
+			
+			// Check for negative slope
+			if (val < 0.00001){ // Used to prevent -0.0 as negative number
+				val = val + 100.0;
 			}
-			else if (*(pw->pulswidth) > PWMO_MAX_PERIOD){
-				*(pw->pulswidth) = PWMO_MAX_PERIOD;
+			
+			// Check limits
+			if (val < PWMO_MIN_PERIOD){
+				val = PWMO_MIN_PERIOD;
+			}
+			else if (val > PWMO_MAX_PERIOD){
+				val = PWMO_MAX_PERIOD;
 			}
 			
 			// Calculate new period
-			period = (unsigned int)((pw->divisor * (*(pw->pulswidth))) - 1.0);
+			period = (unsigned int)((pw->divisor * (val / PWMO_SCALE_RATIO)) - 1.0);
 			bus->wr_buf[(addr + PWMO_PULSE_LOW)] = period & 0xFF;
 			period >>= 8;
 			bus->wr_buf[(addr + PWMO_PULSE_HIGH)] = period & 0xFF;
@@ -1860,8 +1822,22 @@ static int export_pwmo (bus_data_t *bus)
 			return retval;
 		}
 		
-		// PWMo pulswidth pin
-		retval = hal_pin_float_newf(HAL_IN, &(pw->pulswidth), comp_id, "oshwdrv.%d.pwmout.%02d.pulswidth", bus->busnum, id);
+		// PWMo value pin
+		retval = hal_pin_float_newf(HAL_IN, &(pw->value), comp_id, "oshwdrv.%d.pwmout.%02d.value", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// PWMo offset pin
+		retval = hal_param_float_newf(HAL_RW, &(pw->offset), comp_id, "oshwdrv.%d.pwmout.%02d.offset", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// PWMo scale pin
+		retval = hal_param_float_newf(HAL_RW, &(pw->scale), comp_id, "oshwdrv.%d.pwmout.%02d.scale", bus->busnum, id);
 		
 		if (retval != 0){
 			return retval;
