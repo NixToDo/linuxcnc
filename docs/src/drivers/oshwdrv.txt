@@ -155,14 +155,10 @@ same order as the FPGA firmware on the board it specify it.
    Value of the requested pulse width ratio.
    Rangeis from 0.0 to 1.0.
 
-* '(bit input) oshwdrv.<port>.jog.<channel>.clear' -
-   Clears the jog encoder counter.
 * '(s32 output) oshwdrv.<port>.jog.<channel>.count' -
    Encoder position, in raw encoder counts.
 * '(s32 output) oshwdrv.<port>.jog.<channel>.delta' -
    Change in encoder counts since last read.
-* '(float output) oshwdrv.<port>.jog.<channel>.value' -
-   Encoder value, in machine units.
 
 == Parameters
 
@@ -207,9 +203,6 @@ same order as the FPGA firmware on the board it specify it.
    the resolution of the pulse width is only 3 to 32 clock ticks. Resulting in
    a minimum pulse width of about 9.09 % and a maximum of about 96.7 %.
    A higher output frequency results in a lower puls width resolution and vise versa.
-
-* '(float) oshwdrv.<port>.jog.<channel>.scale' -
-   The raw count is divided by scale to get the value in machine units.
 
 == Functions
 

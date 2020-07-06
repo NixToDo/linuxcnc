@@ -118,7 +118,7 @@ MODULE_LICENSE("GPL");
 #define MODULE_RD_PWMO		0x00
 #define MODULE_WR_PWMO		0x02
 #define MODULE_RD_JOG		0x02
-#define MODULE_WR_JOG		0x01
+#define MODULE_WR_JOG		0x00
 
 // Din address offsets
 #define DIN_DATA			0x00
@@ -223,11 +223,6 @@ MODULE_LICENSE("GPL");
 // Jog-Encoder address offsets
 #define JOG_COUNT_LOW		0x00
 #define JOG_COUNT_HIGH		0x01
-#define JOG_CONTROL			0x00
-
-// Jog-Encoder Bits
-#define JOG_CLEAR			0x20
-#define JOG_LATCH			0x40
 
 // Template address offsets
 // Template Bits
@@ -312,8 +307,6 @@ typedef struct pwmo_s {
 // This structure contains the runtime data for a Jog-Encoder 
 typedef struct jog_s {
     unsigned char rd_addr;	// Base address for reading data
-	unsigned char wr_addr;	// Base address for writing data
-	hal_bit_t     *clear;	// Clear the encoder counter
     hal_s32_t     *count;	// Encoder raw (unscaled) encoder counts
     hal_s32_t     *delta;	// Encoder raw (unscaled) delta counts since last read
 } jog_t;
@@ -379,7 +372,6 @@ static void write_aout (bus_data_t *bus);
 static void read_ain (bus_data_t *bus);
 static void write_pwmo (bus_data_t *bus);
 static void read_jog (bus_data_t *bus);
-static void write_jog (bus_data_t *bus);
 static void read_watchdog (bus_data_t *bus);
 static void write_watchdog (bus_data_t *bus);
 
@@ -655,7 +647,6 @@ static void write_all(void *arg, long period)
 	write_stepenc(bus);
 	write_aout(bus);
 	write_pwmo(bus);
-	write_jog(bus);
 	write_watchdog(bus);
 	
 	// Write data from cache to EPP
@@ -1150,36 +1141,6 @@ static void read_jog (bus_data_t *bus)
 	}
 }
 
-static void write_jog (bus_data_t *bus)
-{
-	int n, addr;
-	jog_t *jo;
-	unsigned char control_byte;
-	
-	// Test to make sure it hasn't been freed
-	if (bus->jog == NULL){
-		return;
-	}
-	
-	// Loop through all Jog-Encoders modules
-	for (n = 0; n < bus->num_jog; n++){
-		jo = &(bus->jog[n]);
-		addr = jo->wr_addr;
-		
-		control_byte = bus->wr_buf[(addr + JOG_CONTROL)];
-		
-		// Clear the jog encoder counter?
-		if (*(jo->clear) == 0){
-			control_byte |= JOG_CLEAR; // Clear at 0 to simplify HAL wiring
-		}
-		else {
-			control_byte &= ~JOG_CLEAR;
-		}
-		
-		bus->wr_buf[(addr + JOG_CONTROL)] = control_byte;
-	}
-}
-
 static void read_watchdog (bus_data_t *bus)
 {
 	int addr, status;
@@ -1321,7 +1282,6 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 					
 					case MODULE_ID_JOGENC:
 						bus->jog[number].rd_addr = r_addr;
-						bus->jog[number].wr_addr = w_addr;
 						break;
 						
 					default:
@@ -2017,13 +1977,6 @@ static int export_jog (bus_data_t *bus)
 		}
 		
 		// Export Jog-Encoder HAL pins
-		// Jog clear pin
-		retval = hal_pin_bit_newf(HAL_IN, &(jo->clear), comp_id, "oshwdrv.%d.jog.%02d.clear", bus->busnum, id);
-		
-		if (retval != 0){
-			return retval;
-		}
-		
 		// Jog raw position
 		retval = hal_pin_s32_newf(HAL_OUT, &(jo->count), comp_id, "oshwdrv.%d.jog.%02d.count", bus->busnum, id);
 		
@@ -2037,20 +1990,11 @@ static int export_jog (bus_data_t *bus)
 		if (retval != 0){
 			return retval;
 		}
-		
-		// Clear encoder counter
-		SelWrt(JOG_CLEAR, (jo->wr_addr + JOG_CONTROL), port_addr[bus->busnum]);
-		SelWrt(0, (jo->wr_addr + JOG_CONTROL), port_addr[bus->busnum]);
 	}
 	
 	// Extend the EPP read addresses, if needed
 	if (bus->read_end_addr < (jo->rd_addr + JOG_COUNT_HIGH)){
 		bus->read_end_addr = jo->rd_addr + JOG_COUNT_HIGH;
-	}
-	
-	// Extend the EPP write addresses, if needed
-	if (bus->write_end_addr < (jo->wr_addr + JOG_CONTROL)){
-		bus->write_end_addr = jo->wr_addr + JOG_CONTROL;
 	}
 	
 	return 0;
