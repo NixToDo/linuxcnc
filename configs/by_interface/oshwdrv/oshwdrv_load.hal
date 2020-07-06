@@ -10,25 +10,45 @@ loadrt [EMCMOT]EMCMOT servo_period_nsec=[EMCMOT]SERVO_PERIOD num_joints=[KINS]JO
 loadrt pid num_chan=3
 
 # Load oshwdrv driver
-# If the stepper controller is not connected to the standard parallel port
-# at address 0x378, add port_addr="0x1234" to the following line after a space
-# on LinuxCNC versions 2.7.9 and above, a parameter allows you to change the
-# way the EPP port is controlled. For PCIe cards using the NetMos 990x
-# chips, append epp_dir=1 to the end of the following line
 loadrt hal_oshwdrv port_addr=0x378
 
-# Add components for E-stop logic
+# Load components for E-stop logic
 loadrt estop_latch count=1
 loadrt and2 count=1
+loadrt or2 count=1
+
+# Load componets for jog logic
+loadrt not count=3
+loadrt flipflop count=3
+loadrt debounce cfg=3
+loadrt lut5 count=3
+
 
 # Set up the realtime thread
 # Read inputs first
 addf oshwdrv.0.read servo-thread
 
-# Then run the motion controller
+# Then run the motion controller handler
 addf motion-command-handler servo-thread
+
+# E-Stop stuff
+addf or2.0 servo-thread
 addf and2.0 servo-thread
 addf estop-latch.0 servo-thread
+
+# Jog stuff
+addf debounce.0 servo-thread
+addf lut5.0 servo-thread
+addf lut5.1 servo-thread
+addf lut5.2 servo-thread
+addf flipflop.0 servo-thread
+addf flipflop.1 servo-thread
+addf flipflop.2 servo-thread
+addf not.0 servo-thread
+addf not.1 servo-thread
+addf not.2 servo-thread
+
+# Run the motion controller
 addf motion-controller servo-thread
 
 # Then the PID loops

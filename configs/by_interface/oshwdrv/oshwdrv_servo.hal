@@ -11,9 +11,9 @@ net Ypos-cmd => pid.1.command
 net Zpos-cmd => pid.2.command
 
 # Connect position feedback signals from encoders
-net Xpos-fb <= oshwdrv.0.encoder.00.position
-net Ypos-fb <= oshwdrv.0.encoder.01.position
-net Zpos-fb <= oshwdrv.0.encoder.02.position
+net Xpos-fb <= oshwdrv.0.stepenc.00.enc-position
+net Ypos-fb <= oshwdrv.0.stepenc.01.enc-position
+net Zpos-fb <= oshwdrv.0.stepenc.02.enc-position
 
 # Connect position feedback to PID loop
 net Xpos-fb => pid.0.feedback
@@ -31,9 +31,9 @@ net Youtput <= pid.1.output
 net Zoutput <= pid.2.output
 
 # Connect PID output signals to step generators
-net Xoutput => oshwdrv.0.stepgen.00.velocity
-net Youtput => oshwdrv.0.stepgen.01.velocity
-net Zoutput => oshwdrv.0.stepgen.02.velocity
+net Xoutput => oshwdrv.0.stepenc.00.step-velocity
+net Youtput => oshwdrv.0.stepenc.01.step-velocity
+net Zoutput => oshwdrv.0.stepenc.02.step-velocity
 
 # Connect the axis enables outputs from the motion controller
 net Xenable <= joint.0.amp-enable-out
@@ -46,17 +46,17 @@ net Yenable => pid.1.enable
 net Zenable => pid.2.enable
 
 # Connect axis enables to step generators
-net Xenable => oshwdrv.0.stepgen.00.enable
-net Yenable => oshwdrv.0.stepgen.01.enable
-net Zenable => oshwdrv.0.stepgen.02.enable
+net Xenable => oshwdrv.0.stepenc.00.step-enable
+net Yenable => oshwdrv.0.stepenc.01.step-enable
+net Zenable => oshwdrv.0.stepenc.02.step-enable
 
 # Connect index pulses to motion controller
-net Xindex <=> oshwdrv.0.encoder.00.index-enable
+net Xindex <=> oshwdrv.0.stepenc.00.enc-index-enable
 net Xindex <=> joint.0.index-enable
 net Xindex => pid.0.index-enable
-net Yindex <=> oshwdrv.0.encoder.01.index-enable
+net Yindex <=> oshwdrv.0.stepenc.01.enc-index-enable
 net Yindex <=> joint.1.index-enable
 net Yindex => pid.1.index-enable
-net Zindex <=> oshwdrv.0.encoder.02.index-enable
+net Zindex <=> oshwdrv.0.stepenc.02.enc-index-enable
 net Zindex <=> joint.2.index-enable
 net Zindex => pid.2.index-enable

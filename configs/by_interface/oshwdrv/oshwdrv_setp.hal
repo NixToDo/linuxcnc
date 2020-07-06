@@ -1,19 +1,22 @@
 # HAL config file for oshwdrv board
 
 # Set the step generator pulse timing
-setp oshwdrv.0.stepgen.00-03.pulse-width-ns 2000
-setp oshwdrv.0.stepgen.00-03.pulse-space-min-ns 2000
-setp oshwdrv.0.stepgen.00-03.setup-time-ns 700
+setp oshwdrv.0.stepenc.00.step-pulse-width [JOINT_0]PULS_WIDTH
+setp oshwdrv.0.stepenc.00.step-setup-time [JOINT_0]SETUP_TIME
+setp oshwdrv.0.stepenc.01.step-pulse-width [JOINT_1]PULS_WIDTH
+setp oshwdrv.0.stepenc.01.step-setup-time [JOINT_1]SETUP_TIME
+setp oshwdrv.0.stepenc.02.step-pulse-width [JOINT_2]PULS_WIDTH
+setp oshwdrv.0.stepenc.02.step-setup-time [JOINT_2]SETUP_TIME
 
 # Set step generator output scaling
-setp oshwdrv.0.stepgen.00.scale [JOINT_0]SCALE
-setp oshwdrv.0.stepgen.01.scale [JOINT_1]SCALE
-setp oshwdrv.0.stepgen.02.scale [JOINT_2]SCALE
+setp oshwdrv.0.stepenc.00.step-scale [JOINT_0]SCALE
+setp oshwdrv.0.stepenc.01.step-scale [JOINT_1]SCALE
+setp oshwdrv.0.stepenc.02.step-scale [JOINT_2]SCALE
 
-# Set encoder position feedback scaling 
-setp oshwdrv.0.encoder.00.scale [JOINT_0]SCALE_ENC
-setp oshwdrv.0.encoder.01.scale [JOINT_1]SCALE_ENC
-setp oshwdrv.0.encoder.02.scale [JOINT_2]SCALE_ENC
+# Set stepenc position feedback scaling 
+setp oshwdrv.0.stepenc.00.enc-scale [JOINT_0]SCALE_ENC
+setp oshwdrv.0.stepenc.01.enc-scale [JOINT_1]SCALE_ENC
+setp oshwdrv.0.stepenc.02.enc-scale [JOINT_2]SCALE_ENC
 
 # Set PID loop output limits
 setp pid.0.maxoutput [JOINT_0]PID_MAX_VEL
@@ -47,3 +50,45 @@ setp pid.2.FF0 [JOINT_2]FF0
 setp pid.2.FF1 [JOINT_2]FF1
 setp pid.2.FF2 [JOINT_2]FF2
 setp pid.2.deadband [JOINT_2]DEADBAND
+
+# Analog output settings
+setp oshwdrv.0.adcout.00.offset [ADCOUT]OFFSET_0
+setp oshwdrv.0.adcout.00.scale [ADCOUT]SCALE_0
+setp oshwdrv.0.adcout.01.offset [ADCOUT]OFFSET_1
+setp oshwdrv.0.adcout.01.scale [ADCOUT]SCALE_1
+setp oshwdrv.0.adcout.00-01.enable 1
+
+# Analog input settings
+setp oshwdrv.0.adcin.00.offset [ADCIN]OFFSET_0
+setp oshwdrv.0.adcin.00.scale [ADCIN]SCALE_0
+setp oshwdrv.0.adcin.01.offset [ADCIN]OFFSET_1
+setp oshwdrv.0.adcin.01.scale [ADCIN]SCALE_1
+
+# PWM output settings
+setp oshwdrv.0.pwmout.00.frequency [PWMOUT]FREQUENCY
+setp oshwdrv.0.pwmout.00.offset [PWMOUT]OFFSET
+setp oshwdrv.0.pwmout.00.scale [PWMOUT]SCALE
+setp oshwdrv.0.pwmout.00.enable 1
+
+# Jog axis settings
+setp axis.x.jog-vel-mode 1
+setp axis.y.jog-vel-mode 1
+setp axis.z.jog-vel-mode 1
+
+setp joint.0.jog-vel-mode 1
+setp joint.1.jog-vel-mode 1
+setp joint.2.jog-vel-mode 1
+
+setp axis.x.jog-scale [AXIS_X]JOG_SCALE
+setp axis.y.jog-scale [AXIS_Y]JOG_SCALE
+setp axis.z.jog-scale [AXIS_Z]JOG_SCALE
+
+setp joint.0.jog-scale [AXIS_X]JOG_SCALE
+setp joint.1.jog-scale [AXIS_Y]JOG_SCALE
+setp joint.2.jog-scale [AXIS_Z]JOG_SCALE
+
+setp debounce.0.delay 50
+
+setp lut5.0.function 0xEFEE
+setp lut5.1.function 0xEFEE
+setp lut5.2.function 0xEFEE

@@ -24,19 +24,32 @@ net Zhome => joint.2.home-sw-in
 
 # Connect e-stop write/sense to I/O controller
 # and the estop's output, so estop FF is reset, but
-# prevent continued estop signal from univstep from holding FF cleared
+# prevent continued estop signal from oshwdrv from holding FF cleared
 net oshwdrvEstop <= oshwdrv.0.din.15.in-not
-net oshwdrvEstop => and2.0.in0
+net oshwdrvEstop => or2.0.in0
+
+net oshwdrvWDT <= oshwdrv.0.watchdog.timeout
+net oshwdrvWDT => or2.0.in1
+
+net or2and <= or2.0.out
+net or2and => and2.0.in0
+
 net EstopOkOut <= estop-latch.0.ok-out
 net EstopOkOut => iocontrol.0.emc-enable-in
 net EstopOkOut => and2.0.in1
 net EstopOkOut => oshwdrv.0.dout.07.out
+
 net EstopOkIn <= and2.0.out
 net EstopOkIn => estop-latch.0.fault-in
+
 net emc-estop-out <= iocontrol.0.user-enable-out
 net emc-estop-out => estop-latch.0.ok-in
+
 net emc-estop-reset <= iocontrol.0.user-request-enable
 net emc-estop-reset => estop-latch.0.reset
+
+net oshwdrvWDTreset <= estop-latch.0.fault-out
+net oshwdrvWDTreset => oshwdrv.0.watchdog.estop
 
 # Connect spindle fwd/rev to I/O controller
 net SpindleFwd <= spindle.0.forward
@@ -48,8 +61,94 @@ net SpindleRev => oshwdrv.0.dout.01.out
 net SpindleBrakeOn <= spindle.0.brake
 net SpindleBrakeOn => oshwdrv.0.dout.02.out
 
+# Connect spindle speed out abs to AOUT0
+net SpindleSpeedABS <= spindle.0.speed-out-abs
+net SpindleSpeedABS => oshwdrv.0.adcout.00.value
+net SpindleSpeedABS => oshwdrv.0.adcout.01.value
+net SpindleSpeedABS => oshwdrv.0.pwmout.00.value
+
 # Connect mist/flood coolant to I/O controller
 net MistOn <= iocontrol.0.coolant-mist
 net MistOn => oshwdrv.0.dout.03.out
 net FloodOn <= iocontrol.0.coolant-flood
 net FloodOn => oshwdrv.0.dout.04.out
+
+# Connect jog inputs
+net JogTeleOp <= motion.teleop-mode
+net JogTeleOp => lut5.0.in-2
+net JogTeleOp => lut5.1.in-2
+net JogTeleOp => lut5.2.in-2
+
+net JogJoint0Homed <= joint.0.homed
+net JogJoint0Homed => lut5.0.in-3
+
+net JogJoint1Homed <= joint.1.homed
+net JogJoint1Homed => lut5.1.in-3
+
+net JogJoint2Homed <= joint.2.homed
+net JogJoint2Homed => lut5.2.in-3
+
+net JogInX <= oshwdrv.0.din.03.in
+net JogInX => debounce.0.0.in
+
+net JogButtonX <= debounce.0.0.out
+net JogButtonX => flipflop.0.clk
+net JogButtonX => lut5.1.in-0
+net JogButtonX => lut5.2.in-0
+
+net JogInY <= oshwdrv.0.din.04.in
+net JogInY => debounce.0.1.in
+
+net JogButtonY <= debounce.0.1.out
+net JogButtonY => flipflop.1.clk
+net JogButtonY => lut5.0.in-0
+net JogButtonY => lut5.2.in-1
+
+net JogInZ <= oshwdrv.0.din.05.in
+net JogInZ => debounce.0.2.in
+
+net JogButtonZ <= debounce.0.2.out
+net JogButtonZ => flipflop.2.clk
+net JogButtonZ => lut5.0.in-1
+net JogButtonZ => lut5.1.in-1
+
+net JogEnableX <= flipflop.0.out
+net JogEnableX => axis.x.jog-enable
+net JogEnableX => joint.0.jog-enable
+net JogEnableX => not.0.in
+
+net JogEnableY <= flipflop.1.out
+net JogEnableY => axis.y.jog-enable
+net JogEnableY => joint.1.jog-enable
+net JogEnableY => not.1.in
+
+net JogEnableZ <= flipflop.2.out
+net JogEnableZ => axis.z.jog-enable
+net JogEnableZ => joint.2.jog-enable
+net JogEnableZ => not.2.in
+
+net JogNotEnableX <= not.0.out
+net JogNotEnableX => flipflop.0.data
+
+net JogNotEnableY<= not.1.out
+net JogNotEnableY => flipflop.1.data
+
+net JogNotEnableZ <= not.2.out
+net JogNotEnableZ => flipflop.2.data
+
+net JogResetX <= lut5.0.out
+net JogResetX => flipflop.0.reset
+
+net JogResetY <= lut5.1.out
+net JogResetY => flipflop.1.reset
+
+net JogResetZ <= lut5.2.out
+net JogResetZ => flipflop.2.reset
+
+net JogCounts <= oshwdrv.0.jog.00.count
+net JogCounts => axis.x.jog-counts
+net JogCounts => axis.y.jog-counts
+net JogCounts => axis.z.jog-counts
+net JogCounts => joint.0.jog-counts
+net JogCounts => joint.1.jog-counts
+net JogCounts => joint.2.jog-counts
