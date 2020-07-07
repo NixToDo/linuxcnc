@@ -307,8 +307,8 @@ typedef struct pwmo_s {
 // This structure contains the runtime data for a Jog-Encoder 
 typedef struct jog_s {
     unsigned char rd_addr;	// Base address for reading data
+    int           oldpos;	// Last value of the jog counter
     hal_s32_t     *count;	// Encoder raw (unscaled) encoder counts
-    hal_s32_t     *delta;	// Encoder raw (unscaled) delta counts since last read
 } jog_t;
 
 // This structure contains the runtime data for the watchdog
@@ -1112,8 +1112,7 @@ static void write_pwmo (bus_data_t *bus)
 
 static void read_jog (bus_data_t *bus)
 {
-	int n, addr;
-	hal_s32_t newpos;
+	int n, addr, newpos, delta;
 	jog_t *jo;
 	
 	// Test to make sure it hasn't been freed
@@ -1127,17 +1126,21 @@ static void read_jog (bus_data_t *bus)
 		addr = jo->rd_addr;
 		
 		// Get the new position (in counts)
-		newpos =  (hal_s32_t)(bus->rd_buf[(addr + JOG_COUNT_LOW)]);
-		newpos += (((hal_s32_t)(bus->rd_buf[(addr + JOG_COUNT_HIGH)])) << 8);
+		newpos =  bus->rd_buf[(addr + JOG_COUNT_LOW)];
+		newpos += ((bus->rd_buf[(addr + JOG_COUNT_HIGH)]) << 8);
+		newpos /= 4; // Count on every full quad cycle. Maybe a parameter...
 		
-		// Read a negative number?
-		if (bus->rd_buf[(addr + JOG_COUNT_HIGH)] & 0x80){
-			newpos += 0xFFFF0000;
-		}
+		// Calc delta (to avoid overflows) and save new position
+		delta = newpos - jo->oldpos;
+		jo->oldpos = newpos;
 		
-		// Set HAL delta, count pins
-		*(jo->delta) = newpos - *(jo->count);
-		*(jo->count) = newpos;
+		if (delta == 16383)
+			delta = -1;
+		else if (delta == -16383)
+			delta = 1;
+		
+		// Set HAL count pin
+		*(jo->count) += (hal_s32_t)delta;
 	}
 }
 
@@ -1979,13 +1982,6 @@ static int export_jog (bus_data_t *bus)
 		// Export Jog-Encoder HAL pins
 		// Jog raw position
 		retval = hal_pin_s32_newf(HAL_OUT, &(jo->count), comp_id, "oshwdrv.%d.jog.%02d.count", bus->busnum, id);
-		
-		if (retval != 0){
-			return retval;
-		}
-		
-		// Jog raw delta
-		retval = hal_pin_s32_newf(HAL_OUT, &(jo->delta), comp_id, "oshwdrv.%d.jog.%02d.delta", bus->busnum, id);
 		
 		if (retval != 0){
 			return retval;

@@ -157,8 +157,6 @@ same order as the FPGA firmware on the board it specify it.
 
 * '(s32 output) oshwdrv.<port>.jog.<channel>.count' -
    Encoder position, in raw encoder counts.
-* '(s32 output) oshwdrv.<port>.jog.<channel>.delta' -
-   Change in encoder counts since last read.
 
 == Parameters
 
