@@ -1128,16 +1128,17 @@ static void read_jog (bus_data_t *bus)
 		// Get the new position (in counts)
 		newpos =  bus->rd_buf[(addr + JOG_COUNT_LOW)];
 		newpos += ((bus->rd_buf[(addr + JOG_COUNT_HIGH)]) << 8);
-		newpos /= 4; // Count on every full quad cycle. Maybe a parameter...
+		newpos /= 4; // Count on every full quad cycle only
 		
-		// Calc delta (to avoid overflows) and save new position
+		// Calc delta and save new position
 		delta = newpos - jo->oldpos;
 		jo->oldpos = newpos;
 		
-		if (delta == 16383)
-			delta = -1;
-		else if (delta == -16383)
-			delta = 1;
+		// If a overflow happen, reduce the value to the correct one
+		if (delta >= 16383)
+			delta -= 16384;
+		else if (delta <= -16383)
+			delta += 16384;
 		
 		// Set HAL count pin
 		*(jo->count) += (hal_s32_t)delta;
