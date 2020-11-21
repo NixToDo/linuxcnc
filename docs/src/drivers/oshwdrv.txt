@@ -56,7 +56,9 @@ Currently following functions are available:
    To generate a PWM signal with programmable frequency and puls / pause duration.
 * 'Jog (Handweel encoder) inputs' -
    Decoder for low speed and low resolution quadrature encoders, used usally for manual jogging.
-
+* 'Counter inputs' -
+   A simple counter thats count something like digital inputs.
+   
 In my mind I have some more things:
 * 'SPI master / slave interface' -
    To interface external hardware or to interface the driver board with a computer
@@ -157,6 +159,9 @@ same order as the FPGA firmware on the board it specify it.
 
 * '(s32 output) oshwdrv.<port>.jog.<channel>.count' -
    Encoder position, in raw encoder counts.
+
+* '(u32 output) oshwdrv.<port>.counter.<channel>.value' -
+   Counter value.
 
 == Parameters
 
