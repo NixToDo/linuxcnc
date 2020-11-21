@@ -88,6 +88,8 @@ MODULE_LICENSE("GPL");
 #define MODULE_ID_MSPI		0x07
 #define MODULE_ID_PWMO		0x08
 #define MODULE_ID_JOGENC	0x09
+#define MODULE_ID_COUNTER	0x0A
+#define MODULE_ID_MPGCOM	0x0B
 
 // Module ID addresses
 #define MODULE_ID_WRITE		0x00
@@ -119,6 +121,10 @@ MODULE_LICENSE("GPL");
 #define MODULE_WR_PWMO		0x02
 #define MODULE_RD_JOG		0x02
 #define MODULE_WR_JOG		0x00
+#define MODULE_RD_COUNTER	0x01
+#define MODULE_WR_COUNTER	0x00
+#define MODULE_RD_MPG		0x04
+#define MODULE_WR_MPG		0x01
 
 // Din address offsets
 #define DIN_DATA			0x00
@@ -224,6 +230,30 @@ MODULE_LICENSE("GPL");
 #define JOG_COUNT_LOW		0x00
 #define JOG_COUNT_HIGH		0x01
 
+// Counter address offsets
+#define COUNTER_VALUE		0x00 // Value
+
+// MPGcom address offsets
+#define MPG_RD_BYTE_1		0x00 // Keys
+#define MPG_RD_BYTE_2		0x01 // Encoder low
+#define MPG_RD_BYTE_3		0x02 // Encoder high
+#define MPG_RD_BYTE_4		0x03 // Feed rate
+#define MPG_RD_BYTE_5		0x04 // Spindle RPM
+#define MPG_WR_BYTE_1		0x00 // LEDs
+
+// MPG Bits
+// Byte 1 read
+#define MPG_KEY_RUN			0x01
+#define MPG_KEY_STOP		0x02
+#define MPG_KEY_NULL		0x04
+#define MPG_AXIS			0x18
+#define MPG_RANGE			0xE0
+// Byte 1 write
+#define MPG_RESET			0x01
+#define MPG_LED_X			0x02
+#define MPG_LED_Y			0x04
+#define MPG_LED_Z			0x08
+
 // Template address offsets
 // Template Bits
 // Template hardware limits
@@ -308,7 +338,7 @@ typedef struct pwmo_s {
 typedef struct jog_s {
     unsigned char rd_addr;	// Base address for reading data
     int           oldpos;	// Last value of the jog counter
-    hal_s32_t     *count;	// Encoder raw (unscaled) encoder counts
+    hal_s32_t     *count;	// Encoder raw encoder counts
 } jog_t;
 
 // This structure contains the runtime data for the watchdog
@@ -318,6 +348,35 @@ typedef struct watchdog_s {
 	hal_bit_t     *timeout;	// A timeout indicator
 	hal_bit_t     *estop;	// Emergency Stop input
 } watchdog_t;
+
+// This structure contains the runtime data for a Counter
+typedef struct counter_s {
+    unsigned char rd_addr;	// Base address for reading data
+    int           oldval;	// Last value of the counter
+    hal_u32_t     *count;	// Counter raw value
+} counter_t;
+
+// This structure contains the runtime data for the MPGcom
+typedef struct mpgcom_s {
+    unsigned char rd_addr;		// Base address for reading data
+	unsigned char wr_addr;		// Base address for writing data
+    hal_bit_t     *start;		// Start button
+    hal_bit_t     *stop;		// Stop button
+    hal_bit_t     *null;		// Null button
+	hal_u32_t     *feedrate;	// Switch position of selected feedrate
+	hal_bit_t     *reset;		// Reset MPG
+	hal_bit_t     *led_x;		// LED X axis
+	hal_bit_t     *led_y;		// LED Y axis
+	hal_bit_t     *led_z;		// LED Z axis
+    int           oldpos;		// Last value of the jog counter
+    hal_s32_t     *count;		// Encoder raw encoder counts
+	hal_float_t   *feed;		// Feed rate value
+    hal_float_t   offset_feed;	// Offset, will be added to feed value before scaling
+    hal_float_t   scale_feed;	// Scaling parameter for feed
+    hal_float_t   *speed;		// Speed (RPM) value
+    hal_float_t   offset_speed;	// Offset, will be added to speed before scaling
+    hal_float_t   scale_speed;	// Scaling parameter for speed
+} mpgcom_t;
 
 // This structure contains the runtime data for one complete EPP bus
 typedef struct bus_data_s {
@@ -341,6 +400,10 @@ typedef struct bus_data_s {
 	jog_t         *jog;					// Ptr to shared memory data for Jog-Encoders
     unsigned char num_jog;				// Number of jog modules
 	watchdog_t    *watchdog;			// Ptr to shared memory data for Watchdog
+	unsigned char num_counter;			// Number of counter modules
+	counter_t     *counter;				// Ptr to shared memory data for Counter
+    unsigned char num_mpgcom;			// Number of MPGcom modules
+	mpgcom_t      *mpgcom;				// Ptr to shared memory data for MPGcom
 } bus_data_t;
 
 /***********************************************************************
@@ -374,6 +437,7 @@ static void write_pwmo (bus_data_t *bus);
 static void read_jog (bus_data_t *bus);
 static void read_watchdog (bus_data_t *bus);
 static void write_watchdog (bus_data_t *bus);
+static void read_counter (bus_data_t *bus);
 
 /***********************************************************************
 *                  LOCAL FUNCTION DECLARATIONS                         *
@@ -388,6 +452,7 @@ static int export_ain (bus_data_t *bus);
 static int export_pwmo (bus_data_t *bus);
 static int export_jog (bus_data_t *bus);
 static int export_watchdog (bus_data_t *bus);
+static int export_counter (bus_data_t *bus);
 
 /***********************************************************************
 *                  REALTIME I/O FUNCTION DECLARATIONS                  *
@@ -475,6 +540,8 @@ int rtapi_app_main (void)
 		bus->num_jog = 0;
 		bus->jog = NULL;
 		bus->watchdog = NULL;
+		bus->counter = NULL;
+		bus->mpgcom = NULL;
 		
 		// Read the Module IDs at this bus
 		rv = read_module_ids(bus);
@@ -494,6 +561,7 @@ int rtapi_app_main (void)
 		rv += export_pwmo(bus);
 		rv += export_jog(bus);
 		rv += export_watchdog(bus);
+		rv += export_conter(bus);
 		
 		rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Last read address %d\n", bus->read_end_addr);
 		rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Last write address %d\n", bus->write_end_addr);
@@ -627,6 +695,7 @@ static void read_all (void *arg, long period)
 	read_ain(bus);
 	read_jog(bus);
 	read_watchdog(bus);
+	read_counter(bus);
 }
 
 static void write_all(void *arg, long period)
@@ -1219,6 +1288,39 @@ static void write_watchdog (bus_data_t *bus)
 	}
 }
 
+static void read_counter (bus_data_t *bus)
+{
+	int n, addr, newvalue, delta;
+	counter_t *cnt;
+	
+	// Test to make sure it hasn't been freed
+	if (bus->counter == NULL){
+		return;
+	}
+	
+	// Loop through all Jog-Encoders modules
+	for (n = 0; n < bus->num_counter; n++){
+		cnt = &(bus->counter[n]);
+		addr = cnt->rd_addr;
+		
+		// Get the new count value
+		newvalue = bus->rd_buf[(addr + COUNTER_VALUE)];
+		
+		// Calc delta and save new position
+		delta = newvalue - cnt->oldval;
+		cnt->oldval = newvalue;
+		
+		// If a overflow happen, reduce the value to the correct one
+		if (delta >= 16383)
+			delta -= 16384;
+		else if (delta <= -16383)
+			delta += 16384;
+		
+		// Set HAL count pin
+		*(cnt->count) += (hal_u32_t)delta;
+	}
+}
+
 /***********************************************************************
 *                   LOCAL FUNCTION DEFINITIONS                         *
 ************************************************************************/
@@ -1288,6 +1390,10 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 						bus->jog[number].rd_addr = r_addr;
 						break;
 						
+					case MODULE_ID_COUNTER:
+						bus->counter[number].rd_addr = r_addr;
+						break;
+
 					default:
 						rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: Found unknown module ID\n");
 						return -1;
@@ -1354,6 +1460,10 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 				w_addr += MODULE_WR_JOG;
 				break;
 			
+			case MODULE_ID_COUNTER:
+				r_addr += MODULE_RD_COUNTER;
+				break;
+
 			default:
 				rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: Found unknown module ID: %d\n", id);
 				return -1;
@@ -2058,6 +2168,55 @@ static int export_watchdog (bus_data_t *bus)
 	// Extend the EPP write addresses, if needed
 	if (bus->write_end_addr < (wd->wr_addr + WATCHDOG_CONFIG)){
 		bus->write_end_addr = wd->wr_addr + WATCHDOG_CONFIG;
+	}
+	
+	return 0;
+}
+
+// Export all Counter to the HAL
+static int export_counter (bus_data_t *bus)
+{
+    int cnt, retval, id;
+	counter_t *cnt;
+
+	cnt = count_modules_id(bus, MODULE_ID_COUNTER);
+    bus->num_counter = cnt;
+    rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Exporting Counter %d\n", cnt);
+	
+	// Return if no module was found
+	if (cnt < 1){
+		return 0;
+	}
+	
+    // Allocate shared memory
+    bus->counter = hal_malloc(cnt * sizeof(counter_t));
+    
+    if (bus-> == 0) {
+        rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: hal_malloc() failed\n");
+        return -1;
+    }
+    
+	for (id = 0; id < cnt; id++){
+		// Loop through all modules found
+		cnt = &(bus->counter[id]);
+		retval = module_base_addr(bus, MODULE_ID_COUNTER, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Export Counter HAL pins
+		// Counter raw value
+		retval = hal_pin_u32_newf(HAL_OUT, &(cnt->counter), comp_id, "oshwdrv.%d.counter.%02d.value", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+	}
+	
+	// Extend the EPP read addresses, if needed
+	if (bus->read_end_addr < (cnt->rd_addr + COUNTER_VALUE)){
+		bus->read_end_addr = cnt->rd_addr + COUNTER_VALUE;
 	}
 	
 	return 0;
