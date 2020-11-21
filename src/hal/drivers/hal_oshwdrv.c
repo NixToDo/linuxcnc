@@ -315,10 +315,10 @@ typedef struct aout_s {
 typedef struct ain_s {
     unsigned char rd_addr;	// Base address for reading data
 	hal_float_t   *value0;	// Input 0 value
-    hal_float_t   offset0;	// Offset 0, will be added to value before scaling
+    hal_float_t   offset0;	// Offset 0 parameter
     hal_float_t   scale0;	// Scaling 0 parameter
     hal_float_t   *value1;	// Input 1 value
-    hal_float_t   offset1;	// Offset 1, will be added to value before scaling
+    hal_float_t   offset1;	// Offset 1 parameter
     hal_float_t   scale1;	// Scaling 1 parameter
 } ain_t;
 
@@ -351,9 +351,13 @@ typedef struct watchdog_s {
 
 // This structure contains the runtime data for a Counter
 typedef struct counter_s {
-    unsigned char rd_addr;	// Base address for reading data
-    int           oldval;	// Last value of the counter
-    hal_u32_t     *count;	// Counter raw value
+    unsigned char rd_addr;		// Base address for reading data
+    int           oldcount;		// Old count
+    long          timecount;	// Adds the period value
+    float         count;		// Count value
+    hal_float_t   offset;		// Offset parameter
+    hal_float_t   scale;		// Scaling parameter    
+    hal_float_t   *value;		// Counter scaled value
 } counter_t;
 
 // This structure contains the runtime data for the MPGcom
@@ -437,7 +441,7 @@ static void write_pwmo (bus_data_t *bus);
 static void read_jog (bus_data_t *bus);
 static void read_watchdog (bus_data_t *bus);
 static void write_watchdog (bus_data_t *bus);
-static void read_counter (bus_data_t *bus);
+static void read_counter (bus_data_t *bus, long period);
 
 /***********************************************************************
 *                  LOCAL FUNCTION DECLARATIONS                         *
@@ -561,7 +565,7 @@ int rtapi_app_main (void)
 		rv += export_pwmo(bus);
 		rv += export_jog(bus);
 		rv += export_watchdog(bus);
-		rv += export_conter(bus);
+		rv += export_counter(bus);
 		
 		rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Last read address %d\n", bus->read_end_addr);
 		rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Last write address %d\n", bus->write_end_addr);
@@ -695,7 +699,7 @@ static void read_all (void *arg, long period)
 	read_ain(bus);
 	read_jog(bus);
 	read_watchdog(bus);
-	read_counter(bus);
+	read_counter(bus, period);
 }
 
 static void write_all(void *arg, long period)
@@ -1288,7 +1292,7 @@ static void write_watchdog (bus_data_t *bus)
 	}
 }
 
-static void read_counter (bus_data_t *bus)
+static void read_counter (bus_data_t *bus, long period)
 {
 	int n, addr, newvalue, delta;
 	counter_t *cnt;
@@ -1303,21 +1307,34 @@ static void read_counter (bus_data_t *bus)
 		cnt = &(bus->counter[n]);
 		addr = cnt->rd_addr;
 		
+		// Add period to saved time value
+		cnt->timecount += period;
+		
 		// Get the new count value
-		newvalue = bus->rd_buf[(addr + COUNTER_VALUE)];
+		newvalue = (hal_u32_t)bus->rd_buf[(addr + COUNTER_VALUE)];
 		
-		// Calc delta and save new position
-		delta = newvalue - cnt->oldval;
-		cnt->oldval = newvalue;
+		// Calculate the delta and save new value
+		delta = newvalue - cnt->oldcount;
+		cnt->oldcount = newvalue;
 		
-		// If a overflow happen, reduce the value to the correct one
-		if (delta >= 16383)
-			delta -= 16384;
-		else if (delta <= -16383)
-			delta += 16384;
+		// Check for underflow
+		if (delta <= -255){
+			delta += 256;
+		}
 		
-		// Set HAL count pin
-		*(cnt->count) += (hal_u32_t)delta;
+		// Add the delta to the counter value
+		cnt->count += (float)delta;
+		
+		// More than 1 second over?
+		if (cnt->timecount >= 1000000000){
+			cnt->timecount -= 1000000000;
+			
+			// Divide it
+			cnt->count /= 60;
+			
+			// Set HAL pin incl. scale and offset
+			*(cnt->value) = (cnt->count * cnt->scale) - cnt->offset;
+		}		
 	}
 }
 
@@ -2177,7 +2194,7 @@ static int export_watchdog (bus_data_t *bus)
 static int export_counter (bus_data_t *bus)
 {
     int cnt, retval, id;
-	counter_t *cnt;
+	counter_t *count;
 
 	cnt = count_modules_id(bus, MODULE_ID_COUNTER);
     bus->num_counter = cnt;
@@ -2191,23 +2208,42 @@ static int export_counter (bus_data_t *bus)
     // Allocate shared memory
     bus->counter = hal_malloc(cnt * sizeof(counter_t));
     
-    if (bus-> == 0) {
+    if (bus->counter == 0) {
         rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: hal_malloc() failed\n");
         return -1;
     }
     
 	for (id = 0; id < cnt; id++){
 		// Loop through all modules found
-		cnt = &(bus->counter[id]);
+		count = &(bus->counter[id]);
 		retval = module_base_addr(bus, MODULE_ID_COUNTER, id);
+		count->oldcount = 0;
+		count->timecount = 0;
+		count->count = 0;
 		
 		if (retval != 0){
 			return retval;
 		}
 		
 		// Export Counter HAL pins
-		// Counter raw value
-		retval = hal_pin_u32_newf(HAL_OUT, &(cnt->counter), comp_id, "oshwdrv.%d.counter.%02d.value", bus->busnum, id);
+		// Counter offset parameter
+		retval = hal_param_float_newf(HAL_RW, &(count->offset), comp_id, "oshwdrv.%d.counter.%02d.offset", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Counter scale parameter
+		retval = hal_param_float_newf(HAL_RW, &(count->scale), comp_id, "oshwdrv.%d.counter.%02d.scale", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		count->scale = 1.0;
+
+		// Counter calculated value
+		retval = hal_pin_float_newf(HAL_OUT, &(count->value), comp_id, "oshwdrv.%d.counter.%02d.value", bus->busnum, id);
 		
 		if (retval != 0){
 			return retval;
@@ -2215,8 +2251,8 @@ static int export_counter (bus_data_t *bus)
 	}
 	
 	// Extend the EPP read addresses, if needed
-	if (bus->read_end_addr < (cnt->rd_addr + COUNTER_VALUE)){
-		bus->read_end_addr = cnt->rd_addr + COUNTER_VALUE;
+	if (bus->read_end_addr < (count->rd_addr + COUNTER_VALUE)){
+		bus->read_end_addr = count->rd_addr + COUNTER_VALUE;
 	}
 	
 	return 0;

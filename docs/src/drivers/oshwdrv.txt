@@ -56,8 +56,10 @@ Currently following functions are available:
    To generate a PWM signal with programmable frequency and puls / pause duration.
 * 'Jog (Handweel encoder) inputs' -
    Decoder for low speed and low resolution quadrature encoders, used usally for manual jogging.
-* 'Counter inputs' -
-   A simple counter thats count something like digital inputs.
+* 'Time weighted counter inputs' -
+   A counter thats count pulses from digital inputs (or anything else) and divide it every second by 60.
+   With this function you can measure the amount of pulses per time. Like flow sensors.
+   The output will be scaled and the offset is added.
    
 In my mind I have some more things:
 * 'SPI master / slave interface' -
@@ -155,13 +157,13 @@ same order as the FPGA firmware on the board it specify it.
    Enables the output of the requested PWM.
 * '(float output) 'oshwdrv.<port>.pwmout.<channel>.pulswidth'  -
    Value of the requested pulse width ratio.
-   Rangeis from 0.0 to 1.0.
+   Range is from 0.0 to 1.0.
 
 * '(s32 output) oshwdrv.<port>.jog.<channel>.count' -
    Encoder position, in raw encoder counts.
 
-* '(u32 output) oshwdrv.<port>.counter.<channel>.value' -
-   Counter value.
+* '(float output) oshwdrv.<port>.counter.<channel>.value' -
+   Counter value scaled and offset subtracted.
 
 == Parameters
 
@@ -188,7 +190,7 @@ same order as the FPGA firmware on the board it specify it.
    The number of counts / user unit (to convert from counts to units).
 
 * '(float) oshwdrv.<port>.adcout.<channel>.offset' -
-   Offset is added to the value. Then divided by scale.
+   Offset is added to value. Then divided by scale.
 * '(float) oshwdrv.<port>.adcout.<channel>.scale' -
    The value is divided by scale.
 
@@ -206,6 +208,11 @@ same order as the FPGA firmware on the board it specify it.
    the resolution of the pulse width is only 3 to 32 clock ticks. Resulting in
    a minimum pulse width of about 9.09 % and a maximum of about 96.7 %.
    A higher output frequency results in a lower puls width resolution and vise versa.
+
+* '(float) oshwdrv.<port>.counter.<channel>.offset' -
+   Offset is subtracted from value.
+* '(float) oshwdrv.<port>.counter.<channel>.scale' -
+   The value is multiplied with scale. Then offset is subtracted.
 
 == Functions
 
