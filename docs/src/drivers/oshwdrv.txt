@@ -18,8 +18,8 @@ An typical installation has 16 digital inputs (opto isolated), 8 digital
 outputs (open collector), 4 incemental encoder inputs (A, B and Index),
 4 step puls generators with step and direction pins.
 The board (PCB) has additional circuits for two 0 - 10 VDC outputs and two
-analog inputs 0 - 10 VDC. Unused pins of the FPGA are connected to
-an extention connector.
+analog inputs 0 - 10 VDC. And an SPI interface to connect an MPG.
+Unused pins of the FPGA are connected to an extention connector.
 
 = Overall function description
 
@@ -60,6 +60,8 @@ Currently following functions are available:
    A counter thats count pulses from digital inputs (or anything else) and divide it every second by 60.
    With this function you can measure the amount of pulses per time. Like flow sensors.
    The output will be scaled and the offset is added.
+* 'MPG' -
+   Extends the oshwdrv with an external MPG without eat up the IO pins.
    
 In my mind I have some more things:
 * 'SPI master / slave interface' -
@@ -165,6 +167,26 @@ same order as the FPGA firmware on the board it specify it.
 * '(float output) oshwdrv.<port>.counter.<channel>.value' -
    Counter value scaled and offset subtracted.
 
+* '(bit output) oshwdrv.<port>.mpgcom.<channel>.start' -
+   MPG start button pressed.
+* '(bit output) oshwdrv.<port>.mpgcom.<channel>.stop' -
+   MPG stop button pressed.
+* '(bit output) oshwdrv.<port>.mpgcom.<channel>.null' -
+   MPG null button pressed. To zero the selected axis.
+* '(u32 output) oshwdrv.<port>.mpgcom.<channel>.jog-axis' -
+   MPG selected axis. 0 = None, 1 = X, 2 = Y, 3 = Z
+* '(u32 output) oshwdrv.<port>.mpgcom.<channel>.jog-feed-select' -
+   MPG feed selector position (0 to 7). Used to switch between
+   different jog speeds (ratio between jog counts and axis movement).
+* '(u32 input) oshwdrv.<port>.mpgcom.<channel>.jog-active' -
+   Outputs the currently selected MPG axis.
+* '(s32 output) oshwdrv.<port>.mpgcom.<channel>.jog-count' -
+   Encoder position, in raw encoder counts.
+* '(float output) oshwdrv.<port>.mpgcom.<channel>.feed' -
+   MPG feed poti output. Scaled and offset added.
+* '(float output) oshwdrv.<port>.mpgcom.<channel>.speed' -
+   MPG spindle RPM poti output. Scaled and offset added.
+
 == Parameters
 
 * '(bit) oshwdrv.<port>.dout.<channel>.invert' -
@@ -213,6 +235,15 @@ same order as the FPGA firmware on the board it specify it.
    Offset is subtracted from value.
 * '(float) oshwdrv.<port>.counter.<channel>.scale' -
    The value is multiplied with scale. Then offset is subtracted.
+
+* '(float) oshwdrv.<port>.mpgcom.<channel>.feed-offset' -
+   Offset is added to the MPG feed value.
+* '(float) oshwdrv.<port>.mpgcom.<channel>.feed-scale' -
+   The MPG feed value is multiplied with scale. Then offset is added.
+* '(float) oshwdrv.<port>.mpgcom.<channel>.speed-offset' -
+   Offset is added to the MPG spindle RPM value.
+* '(float) oshwdrv.<port>.mpgcom.<channel>.speed-scale' -
+   The MPG spindle RPM value is multiplied with scale. Then offset is added.
 
 == Functions
 

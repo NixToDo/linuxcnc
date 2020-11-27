@@ -234,29 +234,31 @@ MODULE_LICENSE("GPL");
 #define COUNTER_VALUE		0x00 // Value
 
 // MPGcom address offsets
-#define MPG_RD_BYTE_1		0x00 // Keys
+#define MPG_RD_BYTE_1		0x00 // Discret inputs
 #define MPG_RD_BYTE_2		0x01 // Encoder low
 #define MPG_RD_BYTE_3		0x02 // Encoder high
 #define MPG_RD_BYTE_4		0x03 // Feed rate
 #define MPG_RD_BYTE_5		0x04 // Spindle RPM
-#define MPG_WR_BYTE_1		0x00 // LEDs
+#define MPG_WR_BYTE_1		0x00 // Discret outputs
 
 // MPG Bits
 // Byte 1 read
+#define MPG_KEYS			0x0F
+#define MPG_SELECT			0x70
+// Values
 #define MPG_KEY_RUN			0x01
 #define MPG_KEY_STOP		0x02
-#define MPG_KEY_NULL		0x04
-#define MPG_AXIS			0x18
-#define MPG_RANGE			0xE0
+#define MPG_KEY_NULL		0x03
+#define MPG_KEY_X			0x04
+#define MPG_KEY_Y			0x05
+#define MPG_KEY_Z			0x06
+#define MPG_SELECT_OFFSET	0x04
+
 // Byte 1 write
 #define MPG_RESET			0x01
-#define MPG_LED_X			0x02
-#define MPG_LED_Y			0x04
-#define MPG_LED_Z			0x08
+#define MPG_AXIS_MAX		0x03
+#define MPG_AXIS_OFFSET		0x01
 
-// Template address offsets
-// Template Bits
-// Template hardware limits
 
 /***********************************************************************
 *                       STRUCTURE DEFINITIONS                          *
@@ -367,19 +369,17 @@ typedef struct mpgcom_s {
     hal_bit_t     *start;		// Start button
     hal_bit_t     *stop;		// Stop button
     hal_bit_t     *null;		// Null button
-	hal_u32_t     *feedrate;	// Switch position of selected feedrate
-	hal_bit_t     *reset;		// Reset MPG
-	hal_bit_t     *led_x;		// LED X axis
-	hal_bit_t     *led_y;		// LED Y axis
-	hal_bit_t     *led_z;		// LED Z axis
+	hal_u32_t     *jog_axis;	// Selected jog axis
+	hal_u32_t     *jog_feed;	// Jog feed select switch
+	hal_u32_t     *jog_active;	// Active jog axis output
     int           oldpos;		// Last value of the jog counter
     hal_s32_t     *count;		// Encoder raw encoder counts
 	hal_float_t   *feed;		// Feed rate value
-    hal_float_t   offset_feed;	// Offset, will be added to feed value before scaling
-    hal_float_t   scale_feed;	// Scaling parameter for feed
+    hal_float_t   feed_offset;	// Offset, will be added to feed value before scaling
+    hal_float_t   feed_scale;	// Scaling parameter for feed
     hal_float_t   *speed;		// Speed (RPM) value
-    hal_float_t   offset_speed;	// Offset, will be added to speed before scaling
-    hal_float_t   scale_speed;	// Scaling parameter for speed
+    hal_float_t   speed_offset;	// Offset, will be added to speed before scaling
+    hal_float_t   speed_scale;	// Scaling parameter for speed
 } mpgcom_t;
 
 // This structure contains the runtime data for one complete EPP bus
@@ -404,10 +404,10 @@ typedef struct bus_data_s {
 	jog_t         *jog;					// Ptr to shared memory data for Jog-Encoders
     unsigned char num_jog;				// Number of jog modules
 	watchdog_t    *watchdog;			// Ptr to shared memory data for Watchdog
-	unsigned char num_counter;			// Number of counter modules
 	counter_t     *counter;				// Ptr to shared memory data for Counter
-    unsigned char num_mpgcom;			// Number of MPGcom modules
+	unsigned char num_counter;			// Number of counter modules
 	mpgcom_t      *mpgcom;				// Ptr to shared memory data for MPGcom
+    unsigned char num_mpgcom;			// Number of MPGcom modules
 } bus_data_t;
 
 /***********************************************************************
@@ -442,6 +442,8 @@ static void read_jog (bus_data_t *bus);
 static void read_watchdog (bus_data_t *bus);
 static void write_watchdog (bus_data_t *bus);
 static void read_counter (bus_data_t *bus, long period);
+static void read_mpgcom (bus_data_t *bus);
+static void write_mpgcom (bus_data_t *bus);
 
 /***********************************************************************
 *                  LOCAL FUNCTION DECLARATIONS                         *
@@ -457,6 +459,7 @@ static int export_pwmo (bus_data_t *bus);
 static int export_jog (bus_data_t *bus);
 static int export_watchdog (bus_data_t *bus);
 static int export_counter (bus_data_t *bus);
+static int export_mpgcom (bus_data_t *bus);
 
 /***********************************************************************
 *                  REALTIME I/O FUNCTION DECLARATIONS                  *
@@ -566,6 +569,7 @@ int rtapi_app_main (void)
 		rv += export_jog(bus);
 		rv += export_watchdog(bus);
 		rv += export_counter(bus);
+		rv += export_mpgcom(bus);
 		
 		rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Last read address %d\n", bus->read_end_addr);
 		rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Last write address %d\n", bus->write_end_addr);
@@ -700,6 +704,7 @@ static void read_all (void *arg, long period)
 	read_jog(bus);
 	read_watchdog(bus);
 	read_counter(bus, period);
+	read_mpgcom(bus);
 }
 
 static void write_all(void *arg, long period)
@@ -721,6 +726,7 @@ static void write_all(void *arg, long period)
 	write_aout(bus);
 	write_pwmo(bus);
 	write_watchdog(bus);
+	write_mpgcom(bus);
 	
 	// Write data from cache to EPP
 	SelWrt(bus->wr_buf[1], 0x01, port_addr[bus->busnum]);
@@ -1335,6 +1341,116 @@ static void read_counter (bus_data_t *bus, long period)
 			// Set HAL pin incl. scale and offset
 			*(cnt->value) = (cnt->count * cnt->scale) - cnt->offset;
 		}		
+	}
+}
+
+static void read_mpgcom (bus_data_t *bus)
+{
+	int n, addr, newpos, delta;
+	unsigned char data;
+	mpgcom_t *mpg;
+	
+	// Test to make sure it hasn't been freed
+	if (bus->mpgcom == NULL){
+		return;
+	}
+	
+	// Loop through all MPGcom modules
+	for (n = 0; n < bus->num_mpgcom; n++){
+		cnt = &(bus->mpgcom[n]);
+		addr = mpg->rd_addr;
+		
+		// Read Byte 1 (Discrets)
+		data = bus->rd_buf[(addr + MPG_RD_BYTE_1)];
+		
+		// Momentary buttons, set all to 0 first
+		*(mpg->start) = 0;
+		*(mpg->stop) = 0;
+		*(mpg->null) = 0;
+		*(mpg->jog_axis) = 0;
+
+		switch ((data & MPG_KEYS)){
+			case MPG_KEY_RUN:
+				*(mpg->start) = 1;
+				break;
+			
+			case MPG_KEY_STOP:
+				*(mpg->stop) = 1;
+				break;
+			
+			case MPG_KEY_NULL:
+				*(mpg->null) = 1;
+				break;
+			
+			case MPG_KEY_X:
+				*(mpg->jog_axis) = 1;
+				break;
+				
+			case MPG_KEY_Y:
+				*(mpg->jog_axis) = 2;
+				break;
+				
+			case MPG_KEY_Z:
+				*(mpg->jog_axis) = 3;
+				break;
+				
+			default:
+				break;
+		}
+		
+		// Jog feedrate select
+		*(mpg->jog_feed) = (data & MPG_SELECT) >> MPG_SELECT_OFFSET;
+		
+		// Read second and third Byte (Jog encoder)
+		// Get the new position (in counts)
+		newpos =  bus->rd_buf[(addr + MPG_RD_BYTE_2)];
+		newpos += ((bus->rd_buf[(addr + MPG_RD_BYTE_3)]) << 8);
+		newpos /= 4; // Count on every full quad cycle only
+		
+		// Calc delta and save new position
+		delta = newpos - mpg->oldpos;
+		mpg->oldpos = newpos;
+		
+		// If a overflow happen, reduce the value to the correct one
+		if (delta >= 16383)
+			delta -= 16384;
+		else if (delta <= -16383)
+			delta += 16384;
+		
+		// Set HAL count pin
+		*(mpg->count) += (hal_s32_t)delta;
+		
+		// Read 4th Byte (Feed rate)
+		data = bus->rd_buf[(addr + MPG_RD_BYTE_4)];
+		*(mpg->feed) = ((hal_float_t)data * mpg->feed_scale) + mpg->feed_offset;
+		
+		// Read 5th Byte (Spindle RPM)
+		data = bus->rd_buf[(addr + MPG_RD_BYTE_5)];
+		*(mpg->speed) = ((hal_float_t)data * mpg->speed_scale) + mpg->speed_offset;
+	}
+}
+
+static void write_mpgcom (bus_data_t *bus)
+{
+	int n, b;
+	unsigned char data = 0;
+	mpgcom_t *mpg;
+	
+	// Test to make sure it hasn't been freed
+	if (bus->mpgcom == NULL){
+		return;
+	}
+	
+	// Loop through all MPGcom modules
+	for (n = 0; n < bus->num_mpgcom; n++){
+		mpg = &(bus->mpgcom[n]);
+		
+		// Assemble output Byte 1, Reset Bit always cleared
+		data = (unsigned char)(*(mpg->jog_active) & MPG_AXIS_MAX);
+		data <<= MPG_AXIS_OFFSET;
+		
+		// Write Byte 1 to buffer
+		bus->wr_buf[(mpg->wr_addr + MPG_WR_BYTE_1)] = data;
 	}
 }
 
@@ -2253,6 +2369,159 @@ static int export_counter (bus_data_t *bus)
 	// Extend the EPP read addresses, if needed
 	if (bus->read_end_addr < (count->rd_addr + COUNTER_VALUE)){
 		bus->read_end_addr = count->rd_addr + COUNTER_VALUE;
+	}
+	
+	return 0;
+}
+
+static int export_mpgcom (bus_data_t *bus)
+{
+    int cnt, retval, id;
+	mpgcom_t *mpg;
+
+	cnt = count_modules_id(bus, MODULE_ID_MPGCOM);
+    
+	// Return if more than one module was found
+	if (cnt > 1){
+		return -1;
+	}
+	
+    rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Exporting MPG %d\n", cnt);
+	
+	// Return if no module was found
+	if (cnt < 1){
+		return 0;
+	}
+	
+    // Allocate shared memory
+    bus->mpgcom = hal_malloc(cnt * sizeof(mpgcom_t));
+    
+    if (bus->mpgcom == 0) {
+        rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: hal_malloc() failed\n");
+        return -1;
+    }
+    
+	for (id = 0; id < cnt; id++){
+		// Loop through all modules found
+		mpg = &(bus->mpgcom[id]);
+		retval = module_base_addr(bus, MODULE_ID_MPGCOM, 0);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Export MPGcom HAL pins
+		// Start button
+		retval = hal_pin_bit_newf(HAL_OUT, &(mpg->start), comp_id, "oshwdrv.%d.mpgcom.%02d.start", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Stop button
+		retval = hal_pin_bit_newf(HAL_OUT, &(mpg->stop), comp_id, "oshwdrv.%d.mpgcom.%02d.stop", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Null button
+		retval = hal_pin_bit_newf(HAL_OUT, &(mpg->null), comp_id, "oshwdrv.%d.mpgcom.%02d.null", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Jog axis selected
+		retval = hal_pin_u32_newf(HAL_OUT, &(mpg->jog_axis), comp_id, "oshwdrv.%d.mpgcom.%02d.jog-axis", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Jog feed select switch position
+		retval = hal_pin_u32_newf(HAL_OUT, &(mpg->jog_feed), comp_id, "oshwdrv.%d.mpgcom.%02d.jog-feed-select", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}	
+		
+		// Jog active
+		retval = hal_pin_u32_newf(HAL_IN, &(mpg->jog_active), comp_id, "oshwdrv.%d.mpgcom.%02d.jog-active", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Jog raw position
+		retval = hal_pin_s32_newf(HAL_OUT, &(mpg->count), comp_id, "oshwdrv.%d.mpgcom.%02d.jog-count", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Feed rate value
+		retval = hal_pin_float_newf(HAL_OUT, &(mpg->feed), comp_id, "oshwdrv.%d.mpgcom.%02d.feed", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Feed offset  parameter
+		retval = hal_param_float_newf(HAL_RW, &(mpg->feed_offset), comp_id, "oshwdrv.%d.mpgcom.%02d.feed-offset", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		mpg->feed_offset = 0.0;
+		
+		// Feed scale parameter
+		retval = hal_param_float_newf(HAL_RW, &(mpg->feed_scale), comp_id, "oshwdrv.%d.mpgcom.%02d.feed-scale", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		mpg->feed_scale = 1.0;
+		
+		// Speed rate value
+		retval = hal_pin_float_newf(HAL_OUT, &(mpg->speed), comp_id, "oshwdrv.%d.mpgcom.%02d.speed", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Speed offset  parameter
+		retval = hal_param_float_newf(HAL_RW, &(mpg->speed_offset), comp_id, "oshwdrv.%d.mpgcom.%02d.speed-offset", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		mpg->speed_offset = 0.0;
+		
+		// Speed scale parameter
+		retval = hal_param_float_newf(HAL_RW, &(mpg->speed_scale), comp_id, "oshwdrv.%d.mpgcom.%02d.speed-scale", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		mpg->speed_scale = 1.0;
+		
+		// Set reset Bit
+		SelWrt(MPG_RESET, (mpg->wr_addr + MPG_WR_BYTE_1), port_addr[bus->busnum]);	
+	}
+	
+	// Extend the EPP read addresses, if needed
+	if (bus->read_end_addr < (mpg->rd_addr + MPG_RD_BYTE_5)){
+		bus->read_end_addr = mpg->rd_addr + MPG_RD_BYTE_5;
+	}
+	
+	// Extend the EPP write addresses, if needed
+	if (bus->write_end_addr < (mpg->wr_addr + MPG_WR_BYTE_1)){
+		bus->write_end_addr = mpg->wr_addr + MPG_WR_BYTE_1;
 	}
 	
 	return 0;
