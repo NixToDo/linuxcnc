@@ -1405,7 +1405,6 @@ static void read_mpgcom (bus_data_t *bus)
 		// Get the new position (in counts)
 		newpos =  bus->rd_buf[(addr + MPG_RD_BYTE_2)];
 		newpos += ((bus->rd_buf[(addr + MPG_RD_BYTE_3)]) << 8);
-		newpos /= 4; // Count on every full quad cycle only
 		
 		// Calc delta and save new position
 		delta = newpos - mpg->oldpos;
