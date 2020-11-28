@@ -2398,11 +2398,6 @@ static int export_mpgcom (bus_data_t *bus)
 		return 0;
 	}
 	
-	// Return if no module was found
-	if (cnt < 1){
-		return 0;
-	}
-	
     // Allocate shared memory
     bus->mpgcom = hal_malloc(cnt * sizeof(mpgcom_t));
     
