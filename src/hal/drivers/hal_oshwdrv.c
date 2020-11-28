@@ -1357,7 +1357,7 @@ static void read_mpgcom (bus_data_t *bus)
 	
 	// Loop through all MPGcom modules
 	for (n = 0; n < bus->num_mpgcom; n++){
-		cnt = &(bus->mpgcom[n]);
+		mpg = &(bus->mpgcom[n]);
 		addr = mpg->rd_addr;
 		
 		// Read Byte 1 (Discrets)
@@ -1432,7 +1432,7 @@ static void read_mpgcom (bus_data_t *bus)
 
 static void write_mpgcom (bus_data_t *bus)
 {
-	int n, b;
+	int n;
 	unsigned char data = 0;
 	mpgcom_t *mpg;
 	
@@ -1446,7 +1446,7 @@ static void write_mpgcom (bus_data_t *bus)
 		mpg = &(bus->mpgcom[n]);
 		
 		// Assemble output Byte 1, Reset Bit always cleared
-		data = (unsigned char)(*(mpg->jog_active) & MPG_AXIS_MAX);
+		data = (unsigned char)*(mpg->jog_active) & MPG_AXIS_MAX;
 		data <<= MPG_AXIS_OFFSET;
 		
 		// Write Byte 1 to buffer
@@ -1527,6 +1527,11 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 						bus->counter[number].rd_addr = r_addr;
 						break;
 
+					case MODULE_ID_MPGCOM:
+						bus->mpgcom[number].rd_addr = r_addr;
+						bus->mpgcom[number].wr_addr = w_addr;
+						break;
+
 					default:
 						rtapi_print_msg(RTAPI_MSG_ERR, "oshwdrv: ERROR: Found unknown module ID\n");
 						return -1;
@@ -1595,6 +1600,11 @@ static int module_base_addr (bus_data_t *bus, int moduleid, int number)
 			
 			case MODULE_ID_COUNTER:
 				r_addr += MODULE_RD_COUNTER;
+				break;
+
+			case MODULE_ID_MPGCOM:
+				r_addr += MODULE_RD_MPG;
+				w_addr += MODULE_WR_MPG;
 				break;
 
 			default:
@@ -2380,13 +2390,13 @@ static int export_mpgcom (bus_data_t *bus)
 	mpgcom_t *mpg;
 
 	cnt = count_modules_id(bus, MODULE_ID_MPGCOM);
-    
-	// Return if more than one module was found
-	if (cnt > 1){
-		return -1;
-	}
-	
+	bus->num_mpgcom = cnt;
     rtapi_print_msg(RTAPI_MSG_INFO, "oshwdrv: Exporting MPG %d\n", cnt);
+    
+	// Return if no module was found
+	if (cnt < 1){
+		return 0;
+	}
 	
 	// Return if no module was found
 	if (cnt < 1){
@@ -2404,7 +2414,7 @@ static int export_mpgcom (bus_data_t *bus)
 	for (id = 0; id < cnt; id++){
 		// Loop through all modules found
 		mpg = &(bus->mpgcom[id]);
-		retval = module_base_addr(bus, MODULE_ID_MPGCOM, 0);
+		retval = module_base_addr(bus, MODULE_ID_MPGCOM, id);
 		
 		if (retval != 0){
 			return retval;
