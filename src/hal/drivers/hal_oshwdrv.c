@@ -259,6 +259,9 @@ MODULE_LICENSE("GPL");
 #define MPG_AXIS_MAX		0x03
 #define MPG_AXIS_OFFSET		0x01
 
+// Flag for a pressed momentary key
+#define MPG_KEY_FLAG		0x80
+
 
 /***********************************************************************
 *                       STRUCTURE DEFINITIONS                          *
@@ -364,22 +367,38 @@ typedef struct counter_s {
 
 // This structure contains the runtime data for the MPGcom
 typedef struct mpgcom_s {
-    unsigned char rd_addr;		// Base address for reading data
-	unsigned char wr_addr;		// Base address for writing data
-    hal_bit_t     *start;		// Start button
-    hal_bit_t     *stop;		// Stop button
-    hal_bit_t     *null;		// Null button
-	hal_u32_t     *jog_axis;	// Selected jog axis
-	hal_u32_t     *jog_feed;	// Jog feed select switch
-	hal_u32_t     *jog_active;	// Active jog axis output
-    int           oldpos;		// Last value of the jog counter
-    hal_s32_t     *count;		// Encoder raw encoder counts
-	hal_float_t   *feed;		// Feed rate value
-    hal_float_t   feed_offset;	// Offset, will be added to feed value before scaling
-    hal_float_t   feed_scale;	// Scaling parameter for feed
-    hal_float_t   *speed;		// Speed (RPM) value
-    hal_float_t   speed_offset;	// Offset, will be added to speed before scaling
-    hal_float_t   speed_scale;	// Scaling parameter for speed
+    unsigned char rd_addr;			// Base address for reading data
+	unsigned char wr_addr;			// Base address for writing data
+	unsigned char prog_2nd_stop;	// Status of progam stop button
+    hal_bit_t     *start;			// Start button
+    hal_bit_t     *pause;			// Pause button
+    hal_bit_t     *resume;			// Resume button
+    hal_bit_t     *stop;			// Stop button
+	hal_bit_t     *prog_running;	// HALUI program running
+	hal_bit_t     *prog_paused;		// HALUI program paused
+    hal_bit_t     *null;			// Null button
+	unsigned char jogstatus;		// State of jog enable outputs
+	hal_bit_t     *jog_enable_x;	// Jog axis x
+	hal_bit_t     *jog_enable_y;	// Jog axis y
+	hal_bit_t     *jog_enable_z;	// Jog axis z
+	hal_bit_t     *jog_teleop_mode;	// Input from motion.teleop-mode
+	hal_float_t   *jog_feed;		// Jog feed output
+	hal_float_t   jog_feed_1;		// Feed parameter for jog-select 1
+	hal_float_t   jog_feed_2;		// Feed parameter for jog-select 2
+	hal_float_t   jog_feed_3;		// Feed parameter for jog-select 3
+	hal_float_t   jog_feed_4;		// Feed parameter for jog-select 4
+	hal_float_t   jog_feed_5;		// Feed parameter for jog-select 5
+	hal_float_t   jog_feed_6;		// Feed parameter for jog-select 6
+    int           oldpos;			// Last value of the jog counter
+    hal_s32_t     *count;			// Encoder raw encoder counts
+	hal_float_t   *feed_f;			// Feed rate value in float
+	hal_s32_t     *feed_s32;		// Feed rate value in s32
+    hal_float_t   feed_offset;		// Offset, will be added to feed value before scaling
+    hal_float_t   feed_scale;		// Scaling parameter for feed
+    hal_float_t   *speed_f;			// Spindle speed override value in float
+    hal_s32_t     *speed_s32;		// Spindle speed overrid value in s32
+    hal_float_t   speed_offset;		// Offset, will be added to speed before scaling
+    hal_float_t   speed_scale;		// Scaling parameter for speed
 } mpgcom_t;
 
 // This structure contains the runtime data for one complete EPP bus
@@ -1365,41 +1384,130 @@ static void read_mpgcom (bus_data_t *bus)
 		
 		// Momentary buttons, set all to 0 first
 		*(mpg->start) = 0;
+		*(mpg->pause) = 0;
+		*(mpg->resume) = 0;
 		*(mpg->stop) = 0;
 		*(mpg->null) = 0;
-		*(mpg->jog_axis) = 0;
 
 		switch ((data & MPG_KEYS)){
 			case MPG_KEY_RUN:
-				*(mpg->start) = 1;
+				if (*(mpg->prog_paused) == 1) {
+					*(mpg->resume) = 1;
+					mpg->prog_2nd_stop = 0;
+				}
+				else if (*(mpg->prog_running) == 0) {
+					*(mpg->start) = 1;
+					mpg->prog_2nd_stop = 0;
+				}
 				break;
-			
+				
 			case MPG_KEY_STOP:
-				*(mpg->stop) = 1;
+				if (*(mpg->prog_running) == 1 || mpg->prog_2nd_stop <= 1) {
+					*(mpg->pause) = 1;
+					mpg->prog_2nd_stop = 1;
+				}
+				else {
+					*(mpg->stop) = 1;
+				}
 				break;
-			
+				
 			case MPG_KEY_NULL:
 				*(mpg->null) = 1;
 				break;
-			
+				
 			case MPG_KEY_X:
-				*(mpg->jog_axis) = 1;
+				if (*(mpg->jog_teleop_mode) != 0){ // motion.teleop-mode allowed?
+					if (((mpg->jogstatus & ~MPG_KEY_FLAG) != 1) && ((mpg->jogstatus & MPG_KEY_FLAG) == 0)){
+						// Set jog only once
+						mpg->jogstatus = 1 | MPG_KEY_FLAG;
+						*(mpg->jog_enable_x) = 1;
+						*(mpg->jog_enable_y) = 0;
+						*(mpg->jog_enable_z) = 0;					
+					}
+					
+					if (mpg->jogstatus == 1){
+						// Clear jog at second press
+						mpg->jogstatus = 0 | MPG_KEY_FLAG;
+						*(mpg->jog_enable_x) = 0;
+					}
+				}
 				break;
 				
 			case MPG_KEY_Y:
-				*(mpg->jog_axis) = 2;
+				if (*(mpg->jog_teleop_mode) != 0){ // motion.teleop-mode allowed?
+					if (((mpg->jogstatus & ~MPG_KEY_FLAG) != 2) && ((mpg->jogstatus & MPG_KEY_FLAG) == 0)){
+						// Set jog only once
+						mpg->jogstatus = 2 | MPG_KEY_FLAG;
+						*(mpg->jog_enable_x) = 0;
+						*(mpg->jog_enable_y) = 1;
+						*(mpg->jog_enable_z) = 0;					
+					}
+					
+					if (mpg->jogstatus == 2){
+						// Clear jog at second press
+						mpg->jogstatus = 0 | MPG_KEY_FLAG;
+						*(mpg->jog_enable_y) = 0;
+					}
+				}
 				break;
 				
 			case MPG_KEY_Z:
-				*(mpg->jog_axis) = 3;
+				if (*(mpg->jog_teleop_mode) != 0){ // motion.teleop-mode allowed
+					if (((mpg->jogstatus & ~MPG_KEY_FLAG) != 3) && ((mpg->jogstatus & MPG_KEY_FLAG) == 0)){
+						// Set jog only once
+						mpg->jogstatus = 3 | MPG_KEY_FLAG;
+						*(mpg->jog_enable_x) = 0;
+						*(mpg->jog_enable_y) = 0;
+						*(mpg->jog_enable_z) = 1;					
+					}
+					
+					if (mpg->jogstatus == 3){
+						// Clear jog at second press
+						mpg->jogstatus = 0 | MPG_KEY_FLAG;
+						*(mpg->jog_enable_z) = 0;
+					}
+				}
 				break;
 				
 			default:
+				mpg->jogstatus &= ~MPG_KEY_FLAG;
+				
+				if (mpg->prog_2nd_stop == 1){
+					mpg->prog_2nd_stop = 2;
+				}
 				break;
 		}
 		
 		// Jog feedrate select
-		*(mpg->jog_feed) = (data & MPG_SELECT) >> MPG_SELECT_OFFSET;
+		switch ((data & MPG_SELECT) >> MPG_SELECT_OFFSET){
+			case 1:
+				*(mpg->jog_feed) = mpg->jog_feed_1;
+				break;
+				
+			case 2:
+				*(mpg->jog_feed) = mpg->jog_feed_2;
+				break;
+				
+			case 3:
+				*(mpg->jog_feed) = mpg->jog_feed_3;
+				break;
+				
+			case 4:
+				*(mpg->jog_feed) = mpg->jog_feed_4;
+				break;
+				
+			case 5:
+				*(mpg->jog_feed) = mpg->jog_feed_5;
+				break;
+				
+			case 6:
+				*(mpg->jog_feed) = mpg->jog_feed_6;
+				break;
+				
+			default:
+				*(mpg->jog_feed) = 0.0;
+				break;
+		}
 		
 		// Read second and third Byte (Jog encoder)
 		// Get the new position (in counts)
@@ -1411,21 +1519,23 @@ static void read_mpgcom (bus_data_t *bus)
 		mpg->oldpos = newpos;
 		
 		// If a overflow happen, reduce the value to the correct one
-		if (delta >= 16383)
-			delta -= 16384;
-		else if (delta <= -16383)
-			delta += 16384;
+		if (delta > 32768)
+			delta -= 65536;
+		else if (delta < -32768)
+			delta += 65536;
 		
 		// Set HAL count pin
 		*(mpg->count) += (hal_s32_t)delta;
 		
 		// Read 4th Byte (Feed rate)
 		data = bus->rd_buf[(addr + MPG_RD_BYTE_4)];
-		*(mpg->feed) = ((hal_float_t)data * mpg->feed_scale) + mpg->feed_offset;
+		*(mpg->feed_f) = ((hal_float_t)data * mpg->feed_scale) + mpg->feed_offset;
+		*(mpg->feed_s32) = (hal_s32_t)*(mpg->feed_f);
 		
 		// Read 5th Byte (Spindle RPM)
 		data = bus->rd_buf[(addr + MPG_RD_BYTE_5)];
-		*(mpg->speed) = ((hal_float_t)data * mpg->speed_scale) + mpg->speed_offset;
+		*(mpg->speed_f) = ((hal_float_t)data * mpg->speed_scale) + mpg->speed_offset;
+		*(mpg->speed_s32) = (hal_s32_t)*(mpg->speed_f);
 	}
 }
 
@@ -1444,8 +1554,16 @@ static void write_mpgcom (bus_data_t *bus)
 	for (n = 0; n < bus->num_mpgcom; n++){
 		mpg = &(bus->mpgcom[n]);
 		
+		// Check motion.teleop-mode input
+		if (*(mpg->jog_teleop_mode) == 0){
+			mpg->jogstatus = 0 | MPG_KEY_FLAG;
+			*(mpg->jog_enable_x) = 0;
+			*(mpg->jog_enable_y) = 0;
+			*(mpg->jog_enable_z) = 0;
+		}
+		
 		// Assemble output Byte 1, Reset Bit always cleared
-		data = (unsigned char)*(mpg->jog_active) & MPG_AXIS_MAX;
+		data = mpg->jogstatus & MPG_AXIS_MAX;
 		data <<= MPG_AXIS_OFFSET;
 		
 		// Write Byte 1 to buffer
@@ -2422,8 +2540,36 @@ static int export_mpgcom (bus_data_t *bus)
 			return retval;
 		}
 		
+		// Pause button
+		retval = hal_pin_bit_newf(HAL_OUT, &(mpg->pause), comp_id, "oshwdrv.%d.mpgcom.%02d.pause", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Resume button
+		retval = hal_pin_bit_newf(HAL_OUT, &(mpg->resume), comp_id, "oshwdrv.%d.mpgcom.%02d.resume", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
 		// Stop button
 		retval = hal_pin_bit_newf(HAL_OUT, &(mpg->stop), comp_id, "oshwdrv.%d.mpgcom.%02d.stop", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// HALUI program running
+		retval = hal_pin_bit_newf(HAL_IN, &(mpg->prog_running), comp_id, "oshwdrv.%d.mpgcom.%02d.program-running", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// HALUI program paused
+		retval = hal_pin_bit_newf(HAL_IN, &(mpg->prog_paused), comp_id, "oshwdrv.%d.mpgcom.%02d.program-paused", bus->busnum, id);
 		
 		if (retval != 0){
 			return retval;
@@ -2436,26 +2582,84 @@ static int export_mpgcom (bus_data_t *bus)
 			return retval;
 		}
 		
-		// Jog axis selected
-		retval = hal_pin_u32_newf(HAL_OUT, &(mpg->jog_axis), comp_id, "oshwdrv.%d.mpgcom.%02d.jog-axis", bus->busnum, id);
+		// X jog axis selected
+		retval = hal_pin_bit_newf(HAL_OUT, &(mpg->jog_enable_x), comp_id, "oshwdrv.%d.mpgcom.%02d.jog-enable-x", bus->busnum, id);
 		
 		if (retval != 0){
 			return retval;
 		}
 		
-		// Jog feed select switch position
-		retval = hal_pin_u32_newf(HAL_OUT, &(mpg->jog_feed), comp_id, "oshwdrv.%d.mpgcom.%02d.jog-feed-select", bus->busnum, id);
+		// Y jog axis selected
+		retval = hal_pin_bit_newf(HAL_OUT, &(mpg->jog_enable_y), comp_id, "oshwdrv.%d.mpgcom.%02d.jog-enable-y", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Z jog axis selected
+		retval = hal_pin_bit_newf(HAL_OUT, &(mpg->jog_enable_z), comp_id, "oshwdrv.%d.mpgcom.%02d.jog-enable-z", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Input from motion.teleop-mode
+		retval = hal_pin_bit_newf(HAL_IN, &(mpg->jog_teleop_mode), comp_id, "oshwdrv.%d.mpgcom.%02d.jog-teleop-mode", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		mpg->jogstatus = 0;
+		
+		// Jog feed output
+		retval = hal_pin_float_newf(HAL_OUT, &(mpg->jog_feed), comp_id, "oshwdrv.%d.mpgcom.%02d.jog-feed", bus->busnum, id);
 		
 		if (retval != 0){
 			return retval;
 		}	
 		
-		// Jog active
-		retval = hal_pin_u32_newf(HAL_IN, &(mpg->jog_active), comp_id, "oshwdrv.%d.mpgcom.%02d.jog-active", bus->busnum, id);
+		// Jog feed input 1
+		retval = hal_param_float_newf(HAL_RW, &(mpg->jog_feed_1), comp_id, "oshwdrv.%d.mpgcom.%02d.jog-feed-1", bus->busnum, id);
 		
 		if (retval != 0){
 			return retval;
-		}
+		}	
+		
+		// Jog feed input 2
+		retval = hal_param_float_newf(HAL_RW, &(mpg->jog_feed_2), comp_id, "oshwdrv.%d.mpgcom.%02d.jog-feed-2", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}	
+		
+		// Jog feed input 3
+		retval = hal_param_float_newf(HAL_RW, &(mpg->jog_feed_3), comp_id, "oshwdrv.%d.mpgcom.%02d.jog-feed-3", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}	
+		
+		// Jog feed input 4
+		retval = hal_param_float_newf(HAL_RW, &(mpg->jog_feed_4), comp_id, "oshwdrv.%d.mpgcom.%02d.jog-feed-4", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}	
+		
+		// Jog feed input 5
+		retval = hal_param_float_newf(HAL_RW, &(mpg->jog_feed_5), comp_id, "oshwdrv.%d.mpgcom.%02d.jog-feed-5", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}	
+		
+		// Jog feed input 6
+		retval = hal_param_float_newf(HAL_RW, &(mpg->jog_feed_6), comp_id, "oshwdrv.%d.mpgcom.%02d.jog-feed-6", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}	
 		
 		// Jog raw position
 		retval = hal_pin_s32_newf(HAL_OUT, &(mpg->count), comp_id, "oshwdrv.%d.mpgcom.%02d.jog-count", bus->busnum, id);
@@ -2465,7 +2669,13 @@ static int export_mpgcom (bus_data_t *bus)
 		}
 		
 		// Feed rate value
-		retval = hal_pin_float_newf(HAL_OUT, &(mpg->feed), comp_id, "oshwdrv.%d.mpgcom.%02d.feed", bus->busnum, id);
+		retval = hal_pin_float_newf(HAL_OUT, &(mpg->feed_f), comp_id, "oshwdrv.%d.mpgcom.%02d.feed-f", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		retval = hal_pin_s32_newf(HAL_OUT, &(mpg->feed_s32), comp_id, "oshwdrv.%d.mpgcom.%02d.feed-s32", bus->busnum, id);
 		
 		if (retval != 0){
 			return retval;
@@ -2490,7 +2700,13 @@ static int export_mpgcom (bus_data_t *bus)
 		mpg->feed_scale = 1.0;
 		
 		// Speed rate value
-		retval = hal_pin_float_newf(HAL_OUT, &(mpg->speed), comp_id, "oshwdrv.%d.mpgcom.%02d.speed", bus->busnum, id);
+		retval = hal_pin_float_newf(HAL_OUT, &(mpg->speed_f), comp_id, "oshwdrv.%d.mpgcom.%02d.speed-f", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		retval = hal_pin_s32_newf(HAL_OUT, &(mpg->speed_s32), comp_id, "oshwdrv.%d.mpgcom.%02d.speed-s32", bus->busnum, id);
 		
 		if (retval != 0){
 			return retval;
