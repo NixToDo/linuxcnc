@@ -179,9 +179,8 @@ MODULE_LICENSE("GPL");
 #define AOUT_ENABLE			0x80
 
 // Aout hardware limits
-#define AOUT_SCALE_RATIO    100.0
 #define AOUT_MIN_OUTPUT		0
-#define AOUT_MAX_OUTPUT		1000
+#define AOUT_MAX_OUTPUT		1023
 
 // Ain address offsets
 #define AIN_DATA_0			0x00
@@ -1072,17 +1071,8 @@ static void write_aout (bus_data_t *bus)
 		}
 		
 		// Calculate data
-		val0 = (int)(((*(ao->value0)) + ao->offset0) / (ao->scale0 / AOUT_SCALE_RATIO));
-		val1 = (int)(((*(ao->value1)) + ao->offset1) / (ao->scale1 / AOUT_SCALE_RATIO));
-		
-		// Check for negative slope
-		if (val0 < 0){
-			val0 += 1000;
-		}
-
-		if (val1 < 0){
-			val1 += 1000;
-		}
+		val0 = (int)*(ao->value0) * ao->scale0 + ao->offset0;
+		val1 = (int)*(ao->value1) * ao->scale1 + ao->offset1;
 		
 		// Limit calculated data
 		if (val0 < AOUT_MIN_OUTPUT){
