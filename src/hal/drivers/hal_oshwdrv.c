@@ -221,9 +221,8 @@ MODULE_LICENSE("GPL");
 #define PWMO_CLOCK			SECONDARY_CLOCK
 #define PWMO_MIN_FREQ		(PWMO_CLOCK / 65535)
 #define PWMO_MAX_FREQ		(PWMO_CLOCK / 100)
-#define PWMO_MIN_PERIOD		0.2
-#define PWMO_MAX_PERIOD		99.9
-#define PWMO_SCALE_RATIO    100.0
+#define PWMO_MIN_PERIOD		0.0
+#define PWMO_MAX_PERIOD		1.0
 
 // Jog-Encoder address offsets
 #define JOG_COUNT_LOW		0x00
@@ -1126,8 +1125,8 @@ static void write_pwmo (bus_data_t *bus)
 {
 	int n, addr;
 	pwmo_t *pw;
-	float val;
-	unsigned int divisor, period;
+	float val, period;
+	unsigned int divisor, width;
 	
 	// Test to make sure it hasn't been freed
 	if (bus->pwmo == NULL){
@@ -1174,12 +1173,7 @@ static void write_pwmo (bus_data_t *bus)
 		}
 		else {
 			// Calculate data
-			val = ((*(pw->value)) + pw->offset) / pw->scale;
-			
-			// Check for negative slope
-			if (val < 0.00001){ // Used to prevent -0.0 as negative number
-				val += 100.0;
-			}
+			val = *(pw->value) * pw->scale + pw->offset;
 			
 			// Check limits
 			if (val < PWMO_MIN_PERIOD){
@@ -1190,10 +1184,20 @@ static void write_pwmo (bus_data_t *bus)
 			}
 			
 			// Calculate new period
-			period = (unsigned int)((pw->divisor * (val / PWMO_SCALE_RATIO)) - 1.0);
-			bus->wr_buf[(addr + PWMO_PULSE_LOW)] = period & 0xFF;
-			period >>= 8;
-			bus->wr_buf[(addr + PWMO_PULSE_HIGH)] = period & 0xFF;
+			period = pw->divisor * val;
+			
+			// Limit period to get one pulse tick per clock period minimum
+			if (period < 1.0){
+				period = 1.0;
+			}
+			else if (period > 65534.0){
+				period = 65534.0;
+			}
+			
+			width = (unsigned int)period;
+			bus->wr_buf[(addr + PWMO_PULSE_LOW)] = width & 0xFF;
+			width >>= 8;
+			bus->wr_buf[(addr + PWMO_PULSE_HIGH)] = width & 0xFF;
 		}
 	}
 }
@@ -1348,14 +1352,15 @@ static void read_counter (bus_data_t *bus, long period)
 			cnt->count /= 60;
 			
 			// Set HAL pin incl. scale and offset
-			*(cnt->value) = (cnt->count * cnt->scale) - cnt->offset;
+			*(cnt->value) = cnt->count * cnt->scale + cnt->offset;
 		}		
 	}
 }
 
 static void read_mpgcom (bus_data_t *bus)
 {
-	int n, addr, newpos, delta;
+	int n, addr;
+	int16_t newpos, delta;
 	unsigned char data;
 	mpgcom_t *mpg;
 	
