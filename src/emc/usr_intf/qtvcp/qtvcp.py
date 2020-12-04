@@ -1,23 +1,36 @@
-#!/usr/bin/python
-from __future__ import print_function
+#!/usr/bin/python3
+
 import os
 import sys
 import shutil
 import traceback
 import hal
 import signal
+import subprocess
 
 from optparse import Option, OptionParser
 from PyQt5 import QtWidgets, QtCore
-from qtvcp.core import Status, Info, QComponent, Path
-from qtvcp.lib import xembed
 
 # Set up the base logger
 #   We have do do this before importing other modules because on import
 #   they set up their own loggers as children of the base logger.
 from qtvcp import logger
-LOG = logger.initBaseLogger('QTvcp', log_file=None, log_level=logger.DEBUG)
+LOG = logger.initBaseLogger('QTvcp', log_file=None, log_level=logger.INFO)
 
+
+from qtvcp.core import Status, Info, QComponent, Path
+from qtvcp.lib import xembed
+
+try:
+    from PyQt5.QtWebEngineWidgets import QWebEngineView as QWebView
+except:
+    try:
+        from PyQt5.QtWebKitWidgets import QWebView
+    except:
+        if sys.version_info.major > 2:
+            LOG.error('Qtvcp Error with loading webView - is python3-pyqt5.qtwebengine installed?')
+        else:
+            LOG.error('Qtvcp Error with loading webView - is python-pyqt5.qtwebkit or python-pyqt5.qtwebengine installed?')
 # If log_file is none, logger.py will attempt to find the log file specified in
 # INI [DISPLAY] LOG_FILE, failing that it will log to $HOME/<base_log_name>.log
 
@@ -73,6 +86,10 @@ class QTVCP:
 
         (opts, args) = parser.parse_args()
 
+        if sys.version_info.major > 2:
+            # so web engine can load local images
+            sys.argv.append("--disable-web-security")
+
         # initialize QApp so we can pop up dialogs now. 
         self.app = QtWidgets.QApplication(sys.argv)
 
@@ -82,9 +99,9 @@ class QTVCP:
         from qtvcp import qt_makepins, qt_makegui
 
         # ToDo: pass specific log levels as an argument, or use an INI setting
-        if not opts.debug:
+        if opts.debug:
             # Log level defaults to DEBUG, so set higher if not debug
-            logger.setGlobalLevel(logger.INFO)
+            logger.setGlobalLevel(logger.DEBUG)
 
         # a specific path has been set to load from or...
         # no path set but -ini is present: default qtvcp screen...or
@@ -99,11 +116,17 @@ class QTVCP:
         # set paths using basename
         PATH.set_paths(basepath, bool(INIPATH))
 
+        # keep track of python version during this transition
+        if sys.version_info.major > 2:
+            ver = 'Python 3'
+        else:
+            ver = 'Python 2'
+
         #################
         # Screen specific
         #################
         if INIPATH:
-            LOG.info('green<Building A Linuxcnc Main Screen>')
+            LOG.info('green<Building A Linuxcnc Main Screen with {}>'.format(ver))
             import linuxcnc
             # internationalization and localization
             import locale, gettext
@@ -116,7 +139,7 @@ class QTVCP:
             # International translation
             locale.setlocale(locale.LC_ALL, '')
             locale.bindtextdomain(PATH.DOMAIN, PATH.LOCALEDIR)
-            gettext.install(PATH.DOMAIN, localedir=PATH.LOCALEDIR, unicode=True)
+            gettext.install(PATH.DOMAIN, localedir=PATH.LOCALEDIR)
             gettext.bindtextdomain(PATH.DOMAIN, PATH.LOCALEDIR)
 
             # if no handler file specified, use stock test one
@@ -159,7 +182,7 @@ Pressing cancel will close linuxcnc.""" % target)
         # VCP specific
         #################
         else:
-            LOG.info('green<Building A VCP Panel>')
+            LOG.info('green<Building A VCP Panel with {}>'.format(ver))
             # if no handler file specified, use stock test one
             if not opts.usermod:
                 LOG.info('No handler file specified - using {}'.format(PATH.HANDLER))
@@ -193,6 +216,10 @@ Pressing cancel will close linuxcnc.""" % target)
         if opts.usermod:
             LOG.debug('Loading the handler file')
             window.load_extension(opts.usermod)
+            try:
+                window.web_view = QWebView()
+            except:
+                window.web_view = None
             # do any class patching now
             if "class_patch__" in dir(window.handler_instance):
                 window.handler_instance.class_patch__()
@@ -214,6 +241,17 @@ Pressing cancel will close linuxcnc.""" % target)
                 window.handler_instance.initialized__()
         # All Widgets should be added now - synch them to linuxcnc
         STATUS.forced_update()
+
+        # call a HAL file after widgets built
+        if opts.halfile:
+            if opts.halfile[-4:] == ".tcl":
+                cmd = ["haltcl", opts.halfile]
+            else:
+                cmd = ["halcmd", "-f", opts.halfile]
+            res = subprocess.call(cmd, stdout=sys.stdout, stderr=sys.stderr)
+            if res:
+                print >> sys.stderr, "'%s' exited with %d" %(' '.join(cmd), res)
+                sys.exit(res)
 
         # User components are set up so report that we are ready
         LOG.debug('Set HAL ready')

@@ -1,4 +1,8 @@
-[[cha:qtdragon-gui]]
+[[cha:qtdragon-gui]](((SilverDragon)))
+
+
+:ini: {basebackend@docbook:'':ini}
+:hal: {basebackend@docbook:'':hal}
 
 = SilverDragon GUI
 
@@ -11,7 +15,7 @@ Bugs and oddities are possible. Please test carefully when using a
 dangerous machine. Please forward reports to the forum or maillist.
 
 .qtdragon - 3 or 4 Axis Sample
-image::images/silverdragon.png["QTDragon Router",align="left"]
+image::images/silverdragon.png["QTDragon Router",scale="25%"]
 
 == Getting Started
 
@@ -56,7 +60,7 @@ SUBROUTINE_PATH = ../../../../nc_files/probe/basic_probe/macros
 It also requires extra analog I/O pins for probing. +
 Make sure this line in the HAL file has the 'num_aio=13' entry: +
 The rest of the line depends on your setup and could be different and should not be changed. +
-[source,{ini}]
+[source,{hal}]
 ----
 loadrt motmod servo_period_nsec = [EMCMOT] SERVO_PERIOD num_joints = 4 num_aio = 13
 ----
@@ -107,6 +111,100 @@ unless the machine is in AUTO mode. To hide the keyboard, do one of the followin
 
 It should be noted that keyboard jogging is disabled when using the virtual keyboard. +
 
+== HAL Pins
+These pins are specific to the qtDragon screen, There are of course are many more HAL pins +
+that must be connected for linuxcnc to function. +
+
+If you need a manual tool change prompt, add these lines in your postgui file.
+[source,{hal}]
+----
+net tool-change      hal_manualtoolchange.change   <=  iocontrol.0.tool-change 
+net tool-changed     hal_manualtoolchange.changed  <=  iocontrol.0.tool-changed
+net tool-prep-number hal_manualtoolchange.number   <=  iocontrol.0.tool-prep-number
+----
+
+These pins must be connected in the postgui file for probing to work:
+[source,{hal}]
+----
+net xwidth           motion.analog-out-00 => qtdragon.x_width
+net ywidth           motion.analog-out-01 => qtdragon.y_width
+net avg_dia          motion.analog-out-02 => qtdragon.avg_diameter
+net edge_angle       motion.analog-out-03 => qtdragon.edge_angle
+net edge_delta       motion.analog-out-04 => qtdragon.edge_delta
+net xminus           motion.analog-out-05 => qtdragon.x_minus
+net yminus           motion.analog-out-06 => qtdragon.y_minus
+net zminus           motion.analog-out-07 => qtdragon.z_minus
+net xplus            motion.analog-out-08 => qtdragon.x_plus
+net yplus            motion.analog-out-09 => qtdragon.y_plus
+net xcenter          motion.analog-out-10 => qtdragon.x_center
+net ycenter          motion.analog-out-11 => qtdragon.y_center
+net cal_offset       motion.analog-out-12 => qtdragon.cal_offset
+----
+
+This input pin should be connected to indicate probe state: 
+[source,{hal}]
+----
+qtdragon.hal_led_probe
+----
+
+These pins can be connected to indicate home switch states:
+[source,{hal}]
+----
+qtdragon.hal_led_home_x
+qtdragon.hal_led_home_y
+qtdragon.hal_led_home_z
+----
+
+These pins are inputs related to spindle VFD indicating:
+[source,{hal}]
+----
+qtdragon.modbus-errors
+qtdragon.spindle_amps
+qtdragon.spindle_fault
+qtdragon.spindle_volts
+----
+
+This pin is an output to the spindle control to pause it:
+[source,{hal}]
+----
+qtdragon.spindle_pause
+----
+
+This output pins can be connected to turn on a laser:
+[source,{hal}]
+----
+qtdragon.btn_laser_on
+----
+
+These output pins indicate buttons that were pushed, 
+they are probably of limited use:
+[source,{hal}]
+----
+qtdragon.btn_dimensions
+qtdragon.btn_gcode_edit
+qtdragon.btn_home_x
+qtdragon.btn_home_y
+qtdragon.btn_home_z
+qtdragon.btn_jog_a_slow
+qtdragon.btn_jog_l_slow
+qtdragon.btn_keyboard
+qtdragon.btn_probe_help
+qtdragon.btn_probe_mode
+qtdragon.btn_select_log
+qtdragon.btn_tool_add
+qtdragon.btn_tool_delete
+----
+
+These pins are related to external offsets if they are used:
+[source,{hal}]
+----
+qtdragon.eoffset_clear
+qtdragon.eoffset_count
+qtdragon.eoffset_enable
+qtdragon.eoffset_value
+qtdragon.led_eoffset_limit
+----
+
 == HAL files
 
 The HAL files supplied are for simulation only. A real machine needs its own custom HAL files. The qtdragon screen
@@ -140,7 +238,7 @@ to watch the DROs and stop the routine at any time.
 Probing is very unforgiving to mistakes; be sure to check settings before using.
 
 .qtdragon - Probe Sample
-image::images/silverdragon_probe.png["QTDragon Probe",align="left"]
+image::images/silverdragon_probe.png["QTDragon Probe",scale="25%"]
 
 == Run from Line
 
@@ -165,13 +263,16 @@ It's possible to load Html file (.html ending) with setup notes. They will be di
 Some program, such as Fusion and Aspire will create this files for you.
 
 .qtdragon - Setup Tab Sample
-image::images/silverdragon_setup.png["QTDragon Setup Tab",align="left"]
+image::images/silverdragon_setup.png["QTDragon Setup Tab",scale="25%"]
 
 == Styles
 
 Nearly all aspects of the GUI appearance are configurable via the qtdragon.qss stylesheet file. The file can be edited manually or 
 through the stylesheet dialog widget in the GUI. To call up the dialog, press F12 on the main window. New styles can be applied
 temporarily and then saved to a new qss file, or overwrite the current qss file.
+
+.qtdragon - Two Style Examples
+image::images/style-comparison.png["QTDragon stlyes",scale="25%"]
 
 == Screen resolution
 
@@ -184,4 +285,7 @@ All aspects of the GUI are fully customizable through qtdesigner. This is includ
 The extensive use of qtvcp widgets keeps the amount of required python code to a minimum, allowing relatively easy modifications.
 The LinuxCNC website has extensive documentation on the installation and use of qtvcp libraries.
 <<cha:qtvcp,QtVCP Overview>> for more information
+
+.qtdragon - Customized Silverdragon
+image::images/silverdragon_custom.png["QTDragon customized",scale=25]
 
