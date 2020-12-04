@@ -3298,7 +3298,7 @@ max_spindle_override = float(inifile.find("DISPLAY", "MAX_SPINDLE_OVERRIDE") or 
 max_feed_override = int(max_feed_override * 100 + 0.5)
 max_spindle_override = int(max_spindle_override * 100 + 0.5)
 default_spindle_speed = int(inifile.find("DISPLAY", "DEFAULT_SPINDLE_SPEED") or 1)
-geometry = inifile.find("DISPLAY", "GEOMETRY") or "XYZBCUVW"
+geometry = inifile.find("DISPLAY", "GEOMETRY") or "XYZABCUVW"
 geometry = re.split(" *(-?[XYZABCUVW])", geometry.upper())
 geometry = "".join(reversed(geometry))
 
@@ -3628,10 +3628,10 @@ for a in range(linuxcnc.MAX_AXIS):
         pass
     else:
         if f != 0:
-            step_size_tmp = min(step_size, 1. / f)
-            #TODO: not working, see https://github.com/LinuxCNC/linuxcnc/issues/812
-            #if a < 3: step_size = astep_size = step_size_tmp
-            #else: astep_size = step_size_tmp
+           step_size_tmp = min(step_size, 1. / f)
+           if a in 'XYZ': step_size = astep_size = step_size_tmp
+           elif a in 'ABC': astep_size = step_size_tmp
+           else: step_size = step_size_tmp
 
 if inifile.find("DISPLAY", "MIN_LINEAR_VELOCITY"):
     root_window.tk.call("set_slider_min", float(inifile.find("DISPLAY", "MIN_LINEAR_VELOCITY"))*60)

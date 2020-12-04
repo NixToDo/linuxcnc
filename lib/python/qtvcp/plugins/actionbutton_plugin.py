@@ -62,7 +62,7 @@ class ActionButtonPlugin(QPyDesignerCustomWidgetPlugin):
 
     # Returns the icon
     def icon(self):
-        return QtGui.QIcon(QtGui.QPixmap(ICON.get_path('actionbutton')))
+        return QtGui.QIcon(':/qt-project.org/styles/commonstyle/images/standardbutton-apply-128.png')
 
     # Returns a tool tip short description
     def toolTip(self):
@@ -247,7 +247,8 @@ class ActionButtonDialog(QtWidgets.QDialog):
         node_4 = (('Launch HALmeter',['launch_halmeter', 0], []),
                 ('Launch Status',['launch_status', 0], []),
                 ('Launch HALshow',['launch_halshow', 0], []),
-                ('Launch HALscope',['launch_halscope', 0], [])  )
+                ('Launch HALscope',['launch_halscope', 0], []),
+                ('Launch Calibration',['launch_calibration', 0], [])  )
         node_5 = (('Set MDI Mode',['mdi', 0], []),
                 ('Set Auto Mode',['auto', 0], []),
                 ('Set Manual Mode',['manual', 0], []) )
@@ -413,7 +414,10 @@ class ActionButtonDialog(QtWidgets.QDialog):
         for num, i in enumerate(('P','X','Y','Y2','Z','Z2','Clear',
             'zoom-in','zoom-out','pan-up','pan-down','pan-left',
             'pan-right','rotate-up','rotate-down','rotate-cw',
-            'rotate-ccw','reload')):
+            'rotate-ccw','reload','overlay_dro_on','overlay_dro_off',
+                'overlay-offsets-on','overlay-offsets-off',
+                'inhibit-selection-on','inhibit-selection-off',
+                'alpha-mode-on','alpha-mode-off', 'dimensions-on','dimensions-off')):
             if self.widget.view_type.lower() == i.lower():
                 flag = num
             self.viewComboBox.addItem(i)
