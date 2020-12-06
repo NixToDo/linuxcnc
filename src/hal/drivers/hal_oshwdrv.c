@@ -2663,7 +2663,7 @@ static int export_mpgcom (bus_data_t *bus)
 		}
 		
 		// Feed rate override value
-		retval = hal_pin_s32_newf(HAL_OUT, &(mpg->feed_s32), comp_id, "oshwdrv.%d.mpgcom.%02d.feed", bus->busnum, id);
+		retval = hal_pin_s32_newf(HAL_OUT, &(mpg->feed), comp_id, "oshwdrv.%d.mpgcom.%02d.feed", bus->busnum, id);
 		
 		if (retval != 0){
 			return retval;
@@ -2688,7 +2688,7 @@ static int export_mpgcom (bus_data_t *bus)
 		mpg->feed_scale = 1.0;
 		
 		// Spindle speed rate override value
-		retval = hal_pin_s32_newf(HAL_OUT, &(mpg->speed_s32), comp_id, "oshwdrv.%d.mpgcom.%02d.speed", bus->busnum, id);
+		retval = hal_pin_s32_newf(HAL_OUT, &(mpg->speed), comp_id, "oshwdrv.%d.mpgcom.%02d.speed", bus->busnum, id);
 		
 		if (retval != 0){
 			return retval;
