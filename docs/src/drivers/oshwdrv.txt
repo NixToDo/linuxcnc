@@ -194,14 +194,10 @@ same order as the FPGA firmware on the board it specify it.
    The values are set by parameter jog-feed-1 to -6.
 * '(s32 output) oshwdrv.<port>.mpgcom.<channel>.jog-count' -
    Encoder position, in raw encoder counts. Connect to axis.xyz.jog-counts.
-* '(float output) oshwdrv.<port>.mpgcom.<channel>.feed-f' -
+* '(s32 output) oshwdrv.<port>.mpgcom.<channel>.feed' -
    MPG feed poti output. Scaled and offset added.
-* '(s32 output) oshwdrv.<port>.mpgcom.<channel>.feed-s32' -
-   Same as above, only as signed 32 Bit.
-* '(float output) oshwdrv.<port>.mpgcom.<channel>.speed-f' -
-   MPG spindle RPM poti output. Scaled and offset added.
-* '(s32 output) oshwdrv.<port>.mpgcom.<channel>.speed-s32' -
-   Same as above, only as signed 32 Bit.
+* '(s32 output) oshwdrv.<port>.mpgcom.<channel>.speed' -
+   MPG spindle speed poti output. Scaled and offset added.
 
 == Parameters
 
