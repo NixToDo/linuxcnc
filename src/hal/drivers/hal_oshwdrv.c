@@ -374,6 +374,8 @@ typedef struct mpgcom_s {
     hal_bit_t     *stop;			// Stop button
 	hal_bit_t     *prog_running;	// HALUI program running
 	hal_bit_t     *prog_paused;		// HALUI program paused
+	hal_bit_t     *prog_idle;		// HALUI program idle
+	hal_bit_t     *machine_off;		// Machine off button
     hal_bit_t     *null;			// Null button
 	unsigned char jogstatus;		// State of jog enable outputs
 	hal_bit_t     *jog_enable_x;	// Jog axis x
@@ -1381,6 +1383,7 @@ static void read_mpgcom (bus_data_t *bus)
 		*(mpg->pause) = 0;
 		*(mpg->resume) = 0;
 		*(mpg->stop) = 0;
+		*(mpg->machine_off) = 0;
 		*(mpg->null) = 0;
 
 		switch ((data & MPG_KEYS)){
@@ -1396,12 +1399,17 @@ static void read_mpgcom (bus_data_t *bus)
 				break;
 				
 			case MPG_KEY_STOP:
-				if (*(mpg->prog_running) == 1 || mpg->prog_2nd_stop <= 1) {
+				if (*(mpg->prog_running) == 1 || mpg->prog_2nd_stop == 1) {
 					*(mpg->pause) = 1;
 					mpg->prog_2nd_stop = 1;
 				}
-				else {
+				else if (mpg->prog_2nd_stop >= 2){
 					*(mpg->stop) = 1;
+					mpg->prog_2nd_stop = 3;
+				}
+				
+				if (*(mpg->prog_idle) == 1 && mpg->prog_2nd_stop == 0){
+					*(mpg->machine_off) = 1;
 				}
 				break;
 				
@@ -1468,6 +1476,9 @@ static void read_mpgcom (bus_data_t *bus)
 				
 				if (mpg->prog_2nd_stop == 1){
 					mpg->prog_2nd_stop = 2;
+				}
+				else if (mpg->prog_2nd_stop == 3){
+					mpg->prog_2nd_stop = 0;
 				}
 				break;
 		}
@@ -2564,6 +2575,20 @@ static int export_mpgcom (bus_data_t *bus)
 		
 		// HALUI program paused
 		retval = hal_pin_bit_newf(HAL_IN, &(mpg->prog_paused), comp_id, "oshwdrv.%d.mpgcom.%02d.program-paused", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// HALUI program idle
+		retval = hal_pin_bit_newf(HAL_IN, &(mpg->prog_idle), comp_id, "oshwdrv.%d.mpgcom.%02d.program-idle", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Machine off button
+		retval = hal_pin_bit_newf(HAL_OUT, &(mpg->machine_off), comp_id, "oshwdrv.%d.mpgcom.%02d.machine-off", bus->busnum, id);
 		
 		if (retval != 0){
 			return retval;

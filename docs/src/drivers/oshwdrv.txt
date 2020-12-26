@@ -179,6 +179,10 @@ same order as the FPGA firmware on the board it specify it.
    Used for start / stop buttons. Connect to halui.program.is-running.
 * '(bit input) oshwdrv.<port>.mpgcom.<channel>.program-paused' -
    Used for start / stop buttons. Connect to halui.program.is-paused.
+* '(bit input) oshwdrv.<port>.mpgcom.<channel>.program-idle' -
+   Used for machine off button. Connect to halui.program.is-idle.
+* '(bit output) oshwdrv.<port>.mpgcom.<channel>.machine-off' -
+   When HALUI is in idle mode and MPG stop button is pressed.
 * '(bit output) oshwdrv.<port>.mpgcom.<channel>.null' -
    MPG null button pressed. To zero the selected axis.
 * '(bit output) oshwdrv.<port>.mpgcom.<channel>.jog-enable-x' -
