@@ -376,7 +376,9 @@ typedef struct mpgcom_s {
 	hal_bit_t     *prog_paused;		// HALUI program paused
 	hal_bit_t     *prog_idle;		// HALUI program idle
 	hal_bit_t     *machine_off;		// Machine off button
-    hal_bit_t     *null;			// Null button
+    hal_bit_t     *null_x;			// X touch off
+    hal_bit_t     *null_y;			// Y touch off
+    hal_bit_t     *null_z;			// Z touch off
 	unsigned char jogstatus;		// State of jog enable outputs
 	hal_bit_t     *jog_enable_x;	// Jog axis x
 	hal_bit_t     *jog_enable_y;	// Jog axis y
@@ -1384,7 +1386,9 @@ static void read_mpgcom (bus_data_t *bus)
 		*(mpg->resume) = 0;
 		*(mpg->stop) = 0;
 		*(mpg->machine_off) = 0;
-		*(mpg->null) = 0;
+		*(mpg->null_x) = 0;
+		*(mpg->null_y) = 0;
+		*(mpg->null_z) = 0;
 
 		switch ((data & MPG_KEYS)){
 			case MPG_KEY_RUN:
@@ -1414,7 +1418,22 @@ static void read_mpgcom (bus_data_t *bus)
 				break;
 				
 			case MPG_KEY_NULL:
-				*(mpg->null) = 1;
+				switch (mpg->jogstatus){
+					case 1:
+						*(mpg->null_x) = 1;
+						break;
+
+					case 2:
+						*(mpg->null_y) = 1;
+						break;
+
+					case 3:
+						*(mpg->null_z) = 1;
+						break;
+					
+					default:
+						break;
+				}
 				break;
 				
 			case MPG_KEY_X:
@@ -2594,8 +2613,22 @@ static int export_mpgcom (bus_data_t *bus)
 			return retval;
 		}
 		
-		// Null button
-		retval = hal_pin_bit_newf(HAL_OUT, &(mpg->null), comp_id, "oshwdrv.%d.mpgcom.%02d.null", bus->busnum, id);
+		// X touch off
+		retval = hal_pin_bit_newf(HAL_OUT, &(mpg->null_x), comp_id, "oshwdrv.%d.mpgcom.%02d.null-x", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Y touch off
+		retval = hal_pin_bit_newf(HAL_OUT, &(mpg->null_y), comp_id, "oshwdrv.%d.mpgcom.%02d.null-y", bus->busnum, id);
+		
+		if (retval != 0){
+			return retval;
+		}
+		
+		// Z touch off
+		retval = hal_pin_bit_newf(HAL_OUT, &(mpg->null_z), comp_id, "oshwdrv.%d.mpgcom.%02d.null-z", bus->busnum, id);
 		
 		if (retval != 0){
 			return retval;
