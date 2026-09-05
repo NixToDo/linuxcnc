@@ -12,7 +12,7 @@ loadrt wcomp count=5
 loadrt not count=5
 
 # load the vismach model
-loadusr -W max5gui
+loadusr -W ./max5gui.py
 
 # set a visible tool
 setp max5gui.tool-radius 3
@@ -103,7 +103,6 @@ net spindle-fwd spindle.0.forward
 net spindle-rev spindle.0.reverse
 net spindle-speed spindle.0.speed-out
 
-net lube iocontrol.0.lube
 net flood iocontrol.0.coolant-flood
 net mist iocontrol.0.coolant-mist
 

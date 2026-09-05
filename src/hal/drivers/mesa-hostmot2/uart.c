@@ -16,11 +16,8 @@
 //    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
 //
 
-#include <rtapi_slab.h>
-#include "rtapi.h"
-#include "rtapi_string.h"
-#include "rtapi_math.h"
-#include "hal.h"
+#include <rtapi.h>
+#include <hal.h>
 #include "hostmot2.h"
 
 int hm2_uart_parse_md(hostmot2_t *hm2, int md_index) 
@@ -79,8 +76,7 @@ int hm2_uart_parse_md(hostmot2_t *hm2, int md_index)
             hm2->uart.num_instances = hm2->config.num_uarts;
         }
         
-        hm2->uart.instance = (hm2_uart_instance_t *)hal_malloc(hm2->uart.num_instances 
-                                                               * sizeof(hm2_uart_instance_t));
+        hm2->uart.instance = hal_malloc(hm2->uart.num_instances * sizeof(*hm2->uart.instance));
         if (hm2->uart.instance == NULL) {
             HM2_ERR("out of memory!\n");
             r = -ENOMEM;
@@ -141,7 +137,7 @@ EXPORT_SYMBOL_GPL(hm2_uart_setup);
 // use -1 for tx_mode and rx_mode to leave the mode unchanged
 int hm2_uart_setup(char *name, int bitrate, rtapi_s32 tx_mode, rtapi_s32 rx_mode){
     hostmot2_t *hm2;
-    hm2_uart_instance_t *inst = 0;
+    hm2_uart_instance_t *inst = NULL;
     rtapi_u32 buff;
     int i,r;
     
@@ -315,17 +311,29 @@ int hm2_uart_read(char *name, unsigned char data[])
         case 1:
             r = hm2->llio->read(hm2->llio, hm2->uart.instance[inst].rx1_addr,
                                 &buff, sizeof(rtapi_u32));
+            if (r < 0) {
+                HM2_ERR("UART READ: hm2->llio->read failure %s\n", name);
+                return r;
+            }
             data[c]   = (buff & 0x000000FF);
             return c + 1;
         case 2:
             r = hm2->llio->read(hm2->llio, hm2->uart.instance[inst].rx2_addr,
                                 &buff, sizeof(rtapi_u32));
+            if (r < 0) {
+                HM2_ERR("UART READ: hm2->llio->read failure %s\n", name);
+                return r;
+            }
             data[c]   = (buff & 0x000000FF);
             data[c+1] = (buff & 0x0000FF00) >> 8;
             return c + 2;
         case 3:
             r = hm2->llio->read(hm2->llio, hm2->uart.instance[inst].rx3_addr,
                                 &buff, sizeof(rtapi_u32));
+            if (r < 0) {
+                HM2_ERR("UART READ: hm2->llio->read failure %s\n", name);
+                return r;
+            }
             data[c]   = (buff & 0x000000FF);
             data[c+1] = (buff & 0x0000FF00) >> 8;
             data[c+2] = (buff & 0x00FF0000) >> 16;
@@ -333,10 +341,6 @@ int hm2_uart_read(char *name, unsigned char data[])
         default:
             HM2_ERR("UART READ: Error in buffer parsing.\n");
             return -EINVAL;
-    }
-    if (r < 0) {
-        HM2_ERR("UART READ: hm2->llio->write failure %s\n", name);
-        return -EINVAL;
     }
 }
 
@@ -359,9 +363,11 @@ void hm2_uart_print_module(hostmot2_t *hm2){
 
 void hm2_uart_cleanup(hostmot2_t *hm2)
 {
+    (void)hm2;
 }
 
 void hm2_uart_write(hostmot2_t *hm2)
 {
+    (void)hm2;
 }
 

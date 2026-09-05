@@ -57,6 +57,12 @@
 
 */
 
+#if !defined(__HAL_LIBRARY_INTERNAL_ONLY) || !defined(__LINUXCNC_HAL_H)
+// This also warns when you include the private header
+// before the normal header.
+#warning "You should not be including HAL's private hal_priv.h. Please use the HAL query API."
+#endif
+
 /***********************************************************************
 *                       GENERAL INFORMATION                            *
 ************************************************************************/
@@ -94,217 +100,6 @@
 
 #include <rtapi.h>
 #include <rtapi_mutex.h>
-RTAPI_BEGIN_DECLS
-
-/* SHMPTR(offset) converts 'offset' to a void pointer. */
-#define SHMPTR(offset)  ( (void *)( hal_shmem_base + (offset) ) )
-
-/* SHMOFF(ptr) converts 'ptr' to an offset from shared mem base.  */
-#define SHMOFF(ptr)     ( ((char *)(ptr)) - hal_shmem_base )
-
-/* SHMCHK(ptr) verifies that a pointer actually points to a
-   location that is part of the HAL shared memory block. */
-
-/* offset 0 is reserved for a null-ish pointer, so SHMCHK(hal_shmem_base) is
-   false by design */
-#define SHMCHK(ptr)  ( ((char *)(ptr)) > (hal_shmem_base) && \
-                       ((char *)(ptr)) < (hal_shmem_base + HAL_SIZE) )
-
-/** The good news is that none of this linked list complexity is
-    visible to the components that use this API.  Complexity here
-    is a small price to pay for simplicity later.
-*/
-
-/***********************************************************************
-*            PRIVATE HAL DATA STRUCTURES AND DECLARATIONS              *
-************************************************************************/
-
-/** HAL "list element" data structure.
-    This structure is used to implement generic double linked circular
-    lists.  Such lists have the following characteristics:
-    1) One "dummy" element that serves as the root of the list.
-    2) 'next' and 'previous' pointers are never NULL.
-    3) Insertion and removal of elements is clean and fast.
-    4) No special case code to deal with empty lists, etc.
-    5) Easy traversal of the list in either direction.
-    This structure has no data, only links.  To use it, include it
-    inside a larger structure.
-*/
-typedef struct {
-    rtapi_intptr_t next;			/* next element in list */
-    rtapi_intptr_t prev;			/* previous element in list */
-} hal_list_t;
-
-/** HAL "oldname" data structure.
-    When a pin or parameter gets an alias, this structure is used to
-    store the original name.
-*/
-typedef struct {
-    rtapi_intptr_t next_ptr;		/* next struct (used for free list only) */
-    char name[HAL_NAME_LEN + 1];	/* the original name */
-} hal_oldname_t;
-
-/* Master HAL data structure
-   There is a single instance of this structure in the machine.
-   It resides at the base of the HAL shared memory block, where it
-   can be accessed by both realtime and non-realtime versions of
-   hal_lib.c.  It contains pointers (offsets) to other data items
-   in the area, as well as some housekeeping data.  It is the root
-   structure for all data in the HAL.
-*/
-typedef struct {
-    int version;		/* version code for structs, etc */
-    rtapi_mutex_t mutex;	/* protection for linked lists, etc. */
-    hal_s32_t shmem_avail;	/* amount of shmem left free */
-    constructor pending_constructor;
-			/* pointer to the pending constructor function */
-    char constructor_prefix[HAL_NAME_LEN+1];
-			        /* prefix of name for new instance */
-    char constructor_arg[HAL_NAME_LEN+1];
-			        /* prefix of name for new instance */
-    rtapi_intptr_t shmem_bot;		/* bottom of free shmem (first free byte) */
-    rtapi_intptr_t shmem_top;		/* top of free shmem (1 past last free) */
-    rtapi_intptr_t comp_list_ptr;		/* root of linked list of components */
-    rtapi_intptr_t pin_list_ptr;		/* root of linked list of pins */
-    rtapi_intptr_t sig_list_ptr;		/* root of linked list of signals */
-    rtapi_intptr_t param_list_ptr;		/* root of linked list of parameters */
-    rtapi_intptr_t funct_list_ptr;		/* root of linked list of functions */
-    rtapi_intptr_t thread_list_ptr;	/* root of linked list of threads */
-    long base_period;		/* timer period for realtime tasks */
-    int threads_running;	/* non-zero if threads are started */
-    rtapi_intptr_t oldname_free_ptr;	/* list of free oldname structs */
-    rtapi_intptr_t comp_free_ptr;		/* list of free component structs */
-    rtapi_intptr_t pin_free_ptr;		/* list of free pin structs */
-    rtapi_intptr_t sig_free_ptr;		/* list of free signal structs */
-    rtapi_intptr_t param_free_ptr;		/* list of free parameter structs */
-    rtapi_intptr_t funct_free_ptr;		/* list of free function structs */
-    hal_list_t funct_entry_free;	/* list of free funct entry structs */
-    rtapi_intptr_t thread_free_ptr;	/* list of free thread structs */
-    int exact_base_period;      /* if set, pretend that rtapi satisfied our
-				   period request exactly */
-    unsigned char lock;         /* hal locking, can be one of the HAL_LOCK_* types */
-} hal_data_t;
-
-/** HAL 'component' type.
-    Assigned according to RTAPI and ULAPI definitions.
- */
-typedef enum {
-    COMPONENT_TYPE_UNKNOWN = -1,
-    COMPONENT_TYPE_USER,
-    COMPONENT_TYPE_REALTIME,
-    COMPONENT_TYPE_OTHER
-} component_type_t;
-
-/** HAL 'component' data structure.
-    This structure contains information that is unique to a HAL component.
-    An instance of this structure is added to a linked list when the
-    component calls hal_init().
-*/
-typedef struct {
-    rtapi_intptr_t next_ptr;		/* next component in the list */
-    int comp_id;		/* component ID (RTAPI module id) */
-    int mem_id;			/* RTAPI shmem ID used by this comp */
-    component_type_t type;
-    int ready;                  /* nonzero if ready, 0 if not */
-    int pid;			/* PID of component (user components only) */
-    void *shmem_base;		/* base of shmem for this component */
-    char name[HAL_NAME_LEN + 1];	/* component name */
-    constructor make;
-    int insmod_args;		/* args passed to insmod when loaded */
-} hal_comp_t;
-
-/** HAL 'pin' data structure.
-    This structure contains information about a 'pin' object.
-*/
-typedef struct {
-    rtapi_intptr_t next_ptr;		/* next pin in linked list */
-    int data_ptr_addr;		/* address of pin data pointer */
-    int owner_ptr;		/* component that owns this pin */
-    int signal;			/* signal to which pin is linked */
-    hal_data_u dummysig;	/* if unlinked, data_ptr points here */
-    int oldname;		/* old name if aliased, else zero */
-    hal_type_t type;		/* data type */
-    hal_pin_dir_t dir;		/* pin direction */
-    char name[HAL_NAME_LEN + 1];	/* pin name */
-} hal_pin_t;
-
-/** HAL 'signal' data structure.
-    This structure contains information about a 'signal' object.
-*/
-typedef struct {
-    rtapi_intptr_t next_ptr;		/* next signal in linked list */
-    int data_ptr;		/* offset of signal value */
-    hal_type_t type;		/* data type */
-    int readers;		/* number of input pins linked */
-    int writers;		/* number of output pins linked */
-    int bidirs;			/* number of I/O pins linked */
-    char name[HAL_NAME_LEN + 1];	/* signal name */
-} hal_sig_t;
-
-/** HAL 'parameter' data structure.
-    This structure contains information about a 'parameter' object.
-*/
-typedef struct {
-    rtapi_intptr_t next_ptr;		/* next parameter in linked list */
-    int data_ptr;		/* offset of parameter value */
-    int owner_ptr;		/* component that owns this signal */
-    int oldname;		/* old name if aliased, else zero */
-    hal_type_t type;		/* data type */
-    hal_param_dir_t dir;	/* data direction */
-    char name[HAL_NAME_LEN + 1];	/* parameter name */
-} hal_param_t;
-
-/** the HAL uses functions and threads to handle synchronization of
-    code.  In general, most control systems need to read inputs,
-    perform control calculations, and write outputs, in that order.
-    A given component may perform one, two, or all three of those
-    functions, but usually code from several components will be
-    needed.  Components make that code available by exporting
-    functions, then threads are used to run the functions in the
-    correct order and at the appropriate rate.
-
-    The following structures implement the function/thread portion
-    of the HAL API.  There are two linked lists, one of functions,
-    sorted by name, and one of threads, sorted by execution freqency.
-    Each thread has a linked list of 'function entries', structs
-    that identify the functions connected to that thread.
-*/
-
-typedef struct {
-    rtapi_intptr_t next_ptr;		/* next function in linked list */
-    int uses_fp;		/* floating point flag */
-    int owner_ptr;		/* component that added this funct */
-    int reentrant;		/* non-zero if function is re-entrant */
-    int users;			/* number of threads using function */
-    void *arg;			/* argument for function */
-    void (*funct) (void *, long);	/* ptr to function code */
-    hal_s32_t* runtime;	/* (pin) duration of last run, in CPU cycles */
-    hal_s32_t maxtime;	/* (param) duration of longest run, in CPU cycles */
-    hal_bit_t maxtime_increased;	/* on last call, maxtime increased */
-    char name[HAL_NAME_LEN + 1];	/* function name */
-} hal_funct_t;
-
-typedef struct {
-    hal_list_t links;		/* linked list data */
-    void *arg;			/* argument for function */
-    void (*funct) (void *, long);	/* ptr to function code */
-    int funct_ptr;		/* pointer to function */
-} hal_funct_entry_t;
-
-#define HAL_STACKSIZE 16384	/* realtime task stacksize */
-
-typedef struct {
-    rtapi_intptr_t next_ptr;		/* next thread in linked list */
-    int uses_fp;		/* floating point flag */
-    long int period;		/* period of the thread, in nsec */
-    int priority;		/* priority of the thread */
-    int task_id;		/* ID of the task that runs this thread */
-    hal_s32_t* runtime;	/* (pin) duration of last run, in CPU cycles */
-    hal_s32_t maxtime;	/* (param) duration of longest run, in CPU cycles */
-    hal_list_t funct_list;	/* list of functions to run */
-    char name[HAL_NAME_LEN + 1];	/* thread name */
-    int comp_id;
-} hal_thread_t;
 
 /* IMPORTANT:  If any of the structures in this file are changed, the
    version code (HAL_VER) must be incremented, to ensure that 
@@ -325,13 +120,12 @@ typedef struct {
 
    The use of version codes  means that any subsequent changes to
    the structs will be fully protected, with a clean shutdown and
-   meaningfull error messages in case of a mismatch.
+   meaningful error messages in case of a mismatch.
 */
 
 #define HAL_KEY   0x48414C32	/* key used to open HAL shared memory */
-#define HAL_VER   0x0000000F	/* version code */
-#define HAL_SIZE  (85*4096)
-#define HAL_PSEUDO_COMP_PREFIX "__" /* prefix to identify a pseudo component */
+#define HAL_VER   0x00000014	/* version code */
+#define HAL_SIZE  (2*256*4096)
 
 /* These pointers are set by hal_init() to point to the shmem block
    and to the master data structure. All access should use these
@@ -341,13 +135,316 @@ typedef struct {
    initialized to match that process's memory mapping.)
 */
 
+RTAPI_BEGIN_DECLS
 extern char *hal_shmem_base;
-extern hal_data_t *hal_data;
+extern struct hal_data_t *hal_data;
+// The false error seems to be a cppcheck 2.13 problem
+// cppcheck-suppress unknownMacro
+RTAPI_END_DECLS
+
+#ifdef __cplusplus
+template<class T>
+bool hal_shmchk(T *t) {
+    char *c = reinterpret_cast<char*>(t);
+    return c > hal_shmem_base && c < hal_shmem_base + HAL_SIZE;
+}
+
+template<class T>
+int hal_shmoff(T *t) { return t ? reinterpret_cast<char*>(t) - hal_shmem_base : 0; }
+
+template<class T>
+T *hal_shmptr(int p) { return p ? reinterpret_cast<T*>(hal_shmem_base + p) : nullptr; }
+
+template<class T>
+class hal_shmfield {
+public:
+    hal_shmfield() : off{} {}
+    hal_shmfield(T *t) : off{hal_shmoff(t)} {}
+    hal_shmfield &operator=(T *t) { off = hal_shmoff(t); return *this; }
+    T *get() { return hal_shmptr<T>(off); }
+    const T *get() const { return hal_shmptr<T>(off); }
+    T *operator *() { return get(); }
+    const T *operator *() const { return get(); }
+    T *operator ->() { return get(); }
+    const T *operator ->() const { return get(); }
+    operator bool() const { return off; }
+private:
+    rtapi_intptr_t off;
+};
+
+template<class T>
+hal_shmfield<T> hal_make_shmfield(T *t) {
+    return hal_shmfield<T>(t);
+}
+
+static_assert(sizeof(hal_shmfield<void>) == sizeof(rtapi_intptr_t), "hal_shmfield size matches");
+
+#define SHMFIELD(type) hal_shmfield<type>
+#define SHMPTR(arg) ((arg).get())
+#define SHMOFF(ptr) (hal_make_shmfield(ptr))
+#else
+#define SHMFIELD(type) rtapi_intptr_t
+
+/* SHMPTR(offset) converts 'offset' to a void pointer. */
+#define SHMPTR(offset)  ( (void *)( hal_shmem_base + (offset) ) )
+
+/* SHMOFF(ptr) converts 'ptr' to an offset from shared mem base.  */
+#define SHMOFF(ptr)     ( ((char *)(ptr)) - hal_shmem_base )
+
+/* SHMCHK(ptr) verifies that a pointer actually points to a
+   location that is part of the HAL shared memory block. */
+
+/* offset 0 is reserved for a null-ish pointer, so SHMCHK(hal_shmem_base) is
+   false by design */
+#define SHMCHK(ptr)  ( ((char *)(ptr)) > (hal_shmem_base) && \
+                       ((char *)(ptr)) < (hal_shmem_base + HAL_SIZE) )
+#endif
+
+/** The good news is that none of this linked list complexity is
+    visible to the components that use this API.  Complexity here
+    is a small price to pay for simplicity later.
+*/
+
+/***********************************************************************
+*            PRIVATE HAL DATA STRUCTURES AND DECLARATIONS              *
+************************************************************************/
+
+// The underlying HAL pin/param data storage unit. Not normally exposed because
+// we need everything to go through the getter/setter interface. However, there
+// is a reason to have it for sizeof() queries.
+typedef union {
+    rtapi_bool _b;
+    rtapi_sint _s;
+    rtapi_uint _u;
+    rtapi_real _r;
+} halpr_data_u;
+
+/** HAL "list element" data structure.
+    This structure is used to implement generic double linked circular
+    lists.  Such lists have the following characteristics:
+    1) One "dummy" element that serves as the root of the list.
+    2) 'next' and 'previous' pointers are never NULL.
+    3) Insertion and removal of elements is clean and fast.
+    4) No special case code to deal with empty lists, etc.
+    5) Easy traversal of the list in either direction.
+    This structure has no data, only links.  To use it, include it
+    inside a larger structure.
+*/
+typedef struct hal_list_t {
+    SHMFIELD(hal_list_t) next;			/* next element in list */
+    SHMFIELD(hal_list_t) prev;			/* previous element in list */
+} hal_list_t;
+
+/** HAL "oldname" data structure.
+    When a pin or parameter gets an alias, this structure is used to
+    store the original name.
+*/
+typedef struct hal_oldname_t {
+    SHMFIELD(hal_oldname_t) next_ptr;		/* next struct (used for free list only) */
+    char name[HAL_NAME_LEN + 1];	/* the original name */
+} hal_oldname_t;
+
+typedef struct hal_comp_t hal_comp_t;
+typedef struct hal_pin_t hal_pin_t;
+typedef struct hal_sig_t hal_sig_t;
+typedef struct hal_param_t hal_param_t;
+typedef struct hal_funct_t hal_funct_t;
+typedef struct hal_funct_entry_t hal_funct_entry_t;
+typedef struct hal_thread_t hal_thread_t;
+
+/* Master HAL data structure
+   There is a single instance of this structure in the machine.
+   It resides at the base of the HAL shared memory block, where it
+   can be accessed by both realtime and non-realtime versions of
+   hal_lib.c.  It contains pointers (offsets) to other data items
+   in the area, as well as some housekeeping data.  It is the root
+   structure for all data in the HAL.
+*/
+typedef struct hal_data_t {
+    int version;		/* version code for structs, etc */
+
+    // WARNING: Do not touch these mutex lock fields. Only use the proper
+    // functions halpr_mutex_acquire() and halpr_mutex_release(). See comment
+    // above hal_lib.c:halpr_mutex_acquire() for functional explanation.
+    rtapi_mutex_t priv_rdmutex; // Private mutex for recursive lock
+                                // Important: the mutex uses reverse default
+                                // which means: 0==locked, 1==unlocked
+    int lockcnt;                // Lock counter (using interlocked inc/dec)
+    int locklvl;                // Lock recursion level
+    int locktid;                // Lock owner thread ID
+
+    rtapi_s32 shmem_avail;	/* amount of shmem left free */
+    constructor pending_constructor;
+			/* pointer to the pending constructor function */
+    char constructor_prefix[HAL_NAME_LEN+1];
+			        /* prefix of name for new instance */
+    char constructor_arg[HAL_NAME_LEN+1];
+			        /* prefix of name for new instance */
+    int shmem_bot;		/* bottom of free shmem (first free byte) */
+    int shmem_top;		/* top of free shmem (1 past last free) */
+    SHMFIELD(hal_comp_t) comp_list_ptr;		/* root of linked list of components */
+    SHMFIELD(hal_pin_t) pin_list_ptr;		/* root of linked list of pins */
+    SHMFIELD(hal_sig_t) sig_list_ptr;		/* root of linked list of signals */
+    SHMFIELD(hal_param_t) param_list_ptr;		/* root of linked list of parameters */
+    SHMFIELD(hal_funct_t) funct_list_ptr;		/* root of linked list of functions */
+    SHMFIELD(hal_thread_t) thread_list_ptr;	/* root of linked list of threads */
+    long base_period;		/* timer period for realtime tasks */
+    int threads_running;	/* non-zero if threads are started */
+    SHMFIELD(hal_oldname_t) oldname_free_ptr;	/* list of free oldname structs */
+    SHMFIELD(hal_comp_t) comp_free_ptr;		/* list of free component structs */
+    SHMFIELD(hal_pin_t) pin_free_ptr;		/* list of free pin structs */
+    SHMFIELD(hal_sig_t) sig_free_ptr;		/* list of free signal structs */
+    SHMFIELD(hal_param_t) param_free_ptr;		/* list of free parameter structs */
+    SHMFIELD(hal_funct_t) funct_free_ptr;		/* list of free function structs */
+    hal_list_t funct_entry_free;	/* list of free funct entry structs */
+    SHMFIELD(hal_thread_t) thread_free_ptr;	/* list of free thread structs */
+    int exact_base_period;      /* if set, pretend that rtapi satisfied our
+				   period request exactly */
+    rtapi_realtime_type_t realtime_type;	/* reflects the running realtime type */
+    unsigned char lock;         /* hal locking, can be one of the HAL_LOCK_* types */
+} hal_data_t;
+
+//
+// HAL 'component' type.
+// It now lives in hal.h as 'hal_comp_type_t' and the old code that included
+// HALs privates and used 'compoment_type_t' will be kept alive with this
+// typedef for as long as hal_priv.h is available.
+// FIXME: This should be declared deprecated and retired after a grace period.
+//
+typedef hal_comp_type_t component_type_t;
+
+/** HAL 'component' data structure.
+    This structure contains information that is unique to a HAL component.
+    An instance of this structure is added to a linked list when the
+    component calls hal_init().
+*/
+struct hal_comp_t {
+    SHMFIELD(hal_comp_t) next_ptr;		/* next component in the list */
+    int comp_id;		/* component ID (RTAPI module id) */
+    int mem_id;			/* RTAPI shmem ID used by this comp */
+    component_type_t type;
+    int ready;                  /* nonzero if ready, 0 if not */
+    int pid;			/* PID of component (user components only) */
+    void *shmem_base;		/* base of shmem for this component */
+    char name[HAL_NAME_LEN + 1];	/* component name */
+    constructor make;
+    SHMFIELD(char) insmod_args;		/* args passed to insmod when loaded */
+};
+
+/** HAL 'pin' data structure.
+    This structure contains information about a 'pin' object.
+    The structure layout is matched in the parameter layout.
+    FIXME: Merge with hal_param_t
+*/
+struct hal_pin_t {
+    SHMFIELD(hal_pin_t) next_ptr;		/* next pin in linked list */
+    SHMFIELD(void*) data_ptr_addr;		/* address of pin data pointer */
+    SHMFIELD(hal_comp_t) owner_ptr;		/* component that owns this pin */
+    SHMFIELD(hal_oldname_t) oldname;		/* old name if aliased, else zero */
+    halpr_data_u dummysig;	/* if unlinked, data_ptr points here */
+    SHMFIELD(hal_sig_t) signal;			/* signal to which pin is linked */
+    hal_type_t type;		/* data type */
+    hal_pin_dir_t dir;		/* pin direction */
+    char name[HAL_NAME_LEN + 1];	/* pin name */
+};
+
+/** HAL 'signal' data structure.
+    This structure contains information about a 'signal' object.
+*/
+struct hal_sig_t {
+    SHMFIELD(hal_sig_t) next_ptr;		/* next signal in linked list */
+    SHMFIELD(void*) data_ptr;		/* offset of signal value */
+    hal_type_t type;		/* data type */
+    int readers;		/* number of input pins linked */
+    int writers;		/* number of output pins linked */
+    int bidirs;			/* number of I/O pins linked */
+    char name[HAL_NAME_LEN + 1];	/* signal name */
+};
+
+/** HAL 'parameter' data structure.
+    This structure contains information about a 'parameter' object.
+    The structure layout is matched in the pin layout.
+    FIXME: Merge with hal_pin_t
+*/
+struct hal_param_t {
+    SHMFIELD(hal_param_t) next_ptr;		/* next parameter in linked list */
+    SHMFIELD(void*) data_ptr;		/* offset of parameter value */
+    SHMFIELD(hal_comp_t) owner_ptr;		/* component that owns this signal */
+    SHMFIELD(hal_oldname_t) oldname;		/* old name if aliased, else zero */
+    halpr_data_u data;		/* new API parameter storage is here, data_ptr points here too */
+    SHMFIELD(void*) reserved;	/* reserved to match hal_pin_t layout */
+    hal_type_t type;		/* data type */
+    hal_param_dir_t dir;	/* data direction */
+    char name[HAL_NAME_LEN + 1];	/* parameter name */
+};
+
+/** the HAL uses functions and threads to handle synchronization of
+    code.  In general, most control systems need to read inputs,
+    perform control calculations, and write outputs, in that order.
+    A given component may perform one, two, or all three of those
+    functions, but usually code from several components will be
+    needed.  Components make that code available by exporting
+    functions, then threads are used to run the functions in the
+    correct order and at the appropriate rate.
+
+    The following structures implement the function/thread portion
+    of the HAL API.  There are two linked lists, one of functions,
+    sorted by name, and one of threads, sorted by execution frequency.
+    Each thread has a linked list of 'function entries', structs
+    that identify the functions connected to that thread.
+*/
+
+struct hal_funct_t {
+    SHMFIELD(hal_funct_t) next_ptr;		/* next function in linked list */
+    int uses_fp;		/* floating point flag */
+    SHMFIELD(hal_comp_t) owner_ptr;		/* component that added this funct */
+    int reentrant;		/* non-zero if function is re-entrant */
+    int users;			/* number of threads using function */
+    void *arg;			/* argument for function */
+    void (*funct) (void *, long);	/* ptr to function code */
+    // IMPORTANT: The pins and params are valid as seen from the context that
+    // created them. For uspace that is rtapi_app and in the kernel it is the
+    // kernel's module context.
+    hal_sint_t runtime;	/* (pin) duration of last run, in CPU cycles */
+    hal_sint_t maxtime;	/* (param) duration of longest run, in CPU cycles */
+    hal_bool_t maxtime_increased;	/* (param) on last call, maxtime increased */
+    char name[HAL_NAME_LEN + 1];	/* function name */
+};
+
+struct hal_funct_entry_t {
+    hal_list_t links;		/* linked list data */
+    void *arg;			/* argument for function */
+    void (*funct) (void *, long);	/* ptr to function code */
+    SHMFIELD(hal_funct_t) funct_ptr;		/* pointer to function */
+};
+
+#define HAL_STACKSIZE 16384	/* realtime task stacksize */
+
+struct hal_thread_t {
+    SHMFIELD(hal_thread_t) next_ptr;		/* next thread in linked list */
+    int uses_fp;		/* floating point flag */
+    long int period;		/* period of the thread, in nsec */
+    int priority;		/* priority of the thread */
+    int task_id;		/* ID of the task that runs this thread */
+    // IMPORTANT: The pins and params are valid as seen from the context that
+    // created them. For uspace that is rtapi_app and in the kernel it is the
+    // kernel's module context.
+    hal_sint_t runtime;	/* (pin) duration of last run, in ns */
+    hal_sint_t maxtime;	/* (param) duration of longest run, in ns */
+    hal_sint_t threadbeat; /* (pin) visible monotonic loop beat counter */
+    rtapi_sint beatcnt;    /* Thread monotonic increasing loop beat counter (so we don't need to read/write volatile) */
+    hal_list_t funct_list;	/* list of functions to run */
+    hal_list_t init_funct_list;	/* list of init functions, run once before first cyclic cycle */
+    int init_done;		/* 0 = init pending, 1 = init cycle has executed */
+    char name[HAL_NAME_LEN + 1];	/* thread name */
+    int comp_id;
+};
 
 /***********************************************************************
 *            PRIVATE HAL FUNCTIONS - NOT PART OF THE API               *
 ************************************************************************/
 
+RTAPI_BEGIN_DECLS
 /** None of these functions get or release any mutex.  They all assume
     that the mutex has already been obtained.  Calling them without
     having the mutex may give incorrect results if other processes are
@@ -428,27 +525,17 @@ extern hal_funct_t *halpr_find_funct_by_owner(hal_comp_t * owner,
 extern hal_pin_t *halpr_find_pin_by_sig(hal_sig_t * sig, hal_pin_t * start);
 
 
-/** hal_port_alloc allocates a new empty hal_port having a buffer of size bytes. 
-    returns a negative value on failure or a hal_port_t which can be used with
-    all other hal_port functions.
+/** halpr_port_alloc allocates a new empty hal_port having a buffer of size
+    bytes. Returns a negative errno value on failure. On success zero (0) is
+    returned and the newly allocated hal_port_t is returned in the port
+    argument and can be used with all other hal_port functions.
 */
-extern hal_port_t hal_port_alloc(unsigned size);
+int halpr_port_alloc(unsigned size, hal_port_t *port);
 
+// Recursive HAL mutex (replaces old mutex)
+int halpr_mutex_acquire(void);
+int halpr_mutex_release(void);
+void halpr_mutex_force_release(void);
 
-
-#define HAL_STREAM_MAGIC_NUM		0x4649464F
-struct hal_stream_shm {
-    unsigned int magic;
-    volatile unsigned int in;
-    volatile unsigned int out;
-    unsigned this_sample;
-    int depth;
-    int num_pins;
-    unsigned long num_overruns, num_underruns;
-    hal_type_t type[HAL_STREAM_MAX_PINS];
-    union hal_stream_data data[];
-};
-
-extern int halpr_parse_types(hal_type_t type[HAL_STREAM_MAX_PINS], const char *fcg);
 RTAPI_END_DECLS
 #endif /* HAL_PRIV_H */

@@ -21,7 +21,7 @@ Copyright (C) 2008 Chris Morley
 
 *************************************************************************/
 
-#include "hal.h"
+#include <hal.h>
 
 /* code assumes that PINS_PER_PORT is <= 24 */
 //there are 2 ports on a opto22 pci AC5 card
@@ -33,10 +33,10 @@ Copyright (C) 2008 Chris Morley
 *************************************************************************/
 typedef struct  DigitalPinsParams {
     // Pins.
-    hal_bit_t				*pValue;
-    hal_bit_t				*pValueNot;
+    hal_bool_t				pValue;
+    hal_bool_t				pValueNot;
     // Parameters.
-    hal_bit_t				invert;
+    hal_bool_t				invert;
 } DigitalPinsParams;
 
 

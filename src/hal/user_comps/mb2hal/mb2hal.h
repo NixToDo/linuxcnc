@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
 #include <sys/time.h>
@@ -5,36 +6,28 @@
 #include <unistd.h>
 #include <pthread.h>
 
-#include "rtapi.h"
-#ifdef RTAPI
-#include "rtapi_app.h"
-#endif
-#include "rtapi_string.h"
-#include "rtapi_errno.h"
-#include "hal.h"
-#include "inifile.h"
+#include <rtapi.h>
+#include <rtapi_string.h>
+#include <rtapi_errno.h>
+#include <hal.h>
+#include <inifile.h>
 
 #include <modbus.h>
 
 #define MB2HAL_MAX_LINKS            32
-#define MB2HAL_MAX_DEVICE_LENGTH    32
+#define MB2HAL_MAX_DEVICE_LENGTH    128
 #define MB2HAL_DEFAULT_TCP_PORT    502
 #define MB2HAL_DEFAULT_MB_RESPONSE_TIMEOUT_MS 500
 #define MB2HAL_DEFAULT_MB_BYTE_TIMEOUT_MS     500
 #define MB2HAL_DEFAULT_TCP_PORT    502
+#define MB2HAL_MAX_FNCT01_ELEMENTS 100
 #define MB2HAL_MAX_FNCT02_ELEMENTS 100
 #define MB2HAL_MAX_FNCT03_ELEMENTS 100
 #define MB2HAL_MAX_FNCT04_ELEMENTS 100
-#define MB2HAL_MAX_FNCT05_ELEMENTS 100
+#define MB2HAL_MAX_FNCT05_ELEMENTS 1
 #define MB2HAL_MAX_FNCT06_ELEMENTS 1
 #define MB2HAL_MAX_FNCT15_ELEMENTS 100
 #define MB2HAL_MAX_FNCT16_ELEMENTS 100
-
-#ifdef MODULE_VERBOSE
-MODULE_VERBOSE(emc2, "component:mb2hal:Userspace HAL component to communicate with one or more Modbus devices");
-MODULE_VERBOSE(emc2, "license:LGPL");
-MODULE_LICENSE("LGPL");
-#endif
 
 typedef enum { linkRTU,
                linkTCP
@@ -47,16 +40,19 @@ typedef enum { mbtxERR,
                mbtx_06_WRITE_SINGLE_REGISTER,
                mbtx_15_WRITE_MULTIPLE_COILS,
                mbtx_16_WRITE_MULTIPLE_REGISTERS,
+               mbtx_01_READ_COILS,
+               mbtx_05_WRITE_SINGLE_COIL,
                mbtxMAX
              } mb_tx_fnct; //modbus transaction code
 typedef enum { debugSILENT, debugERR, debugOK, debugDEBUG, debugMAX
              } DEBUG_TYPE; //message levels
 typedef enum { retOK, retOKwithWarning, retERR
-             } retCode; //funtions return codes
+             } retCode; //functions return codes
 
 #define ERR(debug, fmt, args...) if(debug >= debugERR) {fprintf(stderr, "%s %s ERR: "fmt"\n", gbl.hal_mod_name, fnct_name, ## args);}
 #define OK(debug, fmt, args...) if(debug >= debugOK) {fprintf(stdout, "%s %s OK: "fmt"\n", gbl.hal_mod_name, fnct_name, ## args);}
 #define DBG(debug, fmt, args...) if(debug >= debugDEBUG) {fprintf(stdout, "%s %s DEBUG: "fmt"\n", gbl.hal_mod_name, fnct_name, ## args);}
+#define DBGMAX(debug, fmt, args...) if(debug >= debugMAX) {fprintf(stdout, "%s %s DEBUGMAX: "fmt"\n", gbl.hal_mod_name, fnct_name, ## args);}
 
 //Modbus transaction structure (mb_tx_t)
 //Store each transaction defined in INI config file
@@ -97,12 +93,13 @@ typedef struct {
     double last_time_ok;   //last OK tx time
     //HAL related params
     char hal_tx_name[HAL_NAME_LEN + 1];
-    hal_float_t **float_value;
-    hal_s32_t **int_value;
-    //hal_float_t *scale;  //not yet implemented
-    //hal_float_t *offset; //not yet implemented
-    hal_bit_t **bit;
-    hal_u32_t **num_errors;     //num of acummulated errors (0=last tx OK)
+    hal_real_t *float_value;
+    hal_sint_t *int_value;
+    //hal_real_t *scale;  //not yet implemented
+    //hal_real_t *offset; //not yet implemented
+    hal_bool_t *bit;
+    hal_bool_t *bit_inv;
+    hal_uint_t *num_errors;     //num of acummulated errors (0=last tx OK)
 } mb_tx_t;
 
 //Modbus link structure (mb_link_t)
@@ -131,10 +128,10 @@ typedef struct {
 //Reduce functions parameters using this common global structure.
 typedef struct {
     //INI config file
-    FILE *ini_file_ptr;
-    char *ini_file_path;
+    const char *ini_file_path;
     //INI config, common section
-    int    init_dbg;
+    int   init_dbg;
+    int   version;
     double slowdown;
     //HAL related
     int   hal_mod_id;
@@ -147,7 +144,7 @@ typedef struct {
     int   tot_mb_links;
     //others
     const char *mb_tx_fncts[mbtxMAX];
-    int quit_flag;
+    volatile int quit_flag;
 } gbl_t;
 
 extern gbl_t gbl;
@@ -178,9 +175,11 @@ retCode create_HAL_pins();
 retCode create_each_mb_tx_hal_pins(mb_tx_t *mb_tx);
 
 //mb2hal_modbus.c
-retCode fnct_15_write_multiple_coils(mb_tx_t *this_mb_tx, mb_link_t *this_mb_link);
+retCode fnct_01_read_coils(mb_tx_t *this_mb_tx, mb_link_t *this_mb_link);
 retCode fnct_02_read_discrete_inputs(mb_tx_t *this_mb_tx, mb_link_t *this_mb_link);
-retCode fnct_04_read_input_registers(mb_tx_t *this_mb_tx, mb_link_t *this_mb_link);
 retCode fnct_03_read_holding_registers(mb_tx_t *this_mb_tx, mb_link_t *this_mb_link);
+retCode fnct_04_read_input_registers(mb_tx_t *this_mb_tx, mb_link_t *this_mb_link);
+retCode fnct_05_write_single_coil(mb_tx_t *this_mb_tx, mb_link_t *this_mb_link);
 retCode fnct_06_write_single_register(mb_tx_t *this_mb_tx, mb_link_t *this_mb_link);
+retCode fnct_15_write_multiple_coils(mb_tx_t *this_mb_tx, mb_link_t *this_mb_link);
 retCode fnct_16_write_multiple_registers(mb_tx_t *this_mb_tx, mb_link_t *this_mb_link);

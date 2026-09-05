@@ -1,0 +1,318 @@
+= halrmt(1)
+
+== NAME
+
+halrmt - remote-control interface for LinuxCNC/HAL
+
+== SYNOPSIS
+
+*halrmt* [*--port* _<port number>_] [*--name* _<server name>_] [*--connectpw* _<password>_] [*--enablepw* _<password>_] [*--sessions* _<max sessions>_] [*--ini* _<INI file>_]
+
+== OPTIONS
+
+-h,--help::
+  Print a brief usage help message.
+
+-n,--name _server_name_::
+  Sets the server name to specified name for in reply to `HELLO` command.
+  Default: EMCNETSVR.
+
+-p,--port _port_::
+  Listen on TCP port _port_ for connection.
+  Both IPv4 and IPv6 connections are accepted.
+  Default port is 5006.
+  (Note: linuxcncrsh uses 5007 as default)
+
+-w,--connectpw _password_::
+  Sets the `HELLO` command password to _password_.
+  Default: EMC.
+
+-e,--enablepw _password_::
+  Sets the `SET ENABLE` command password to _password_.
+  Default: EMCTOO.
+
+-s,--sessions _max_sessions_::
+  Sets the maximum number of simultaneous connextions to _max_sessions_.
+  Default is no limit (0).
+
+-i,--ini _INI_file_::
+  Uses the specified _INI_file_.
+  The default is to get the _INI_file_ name from the environment variable `INI_FILE_NAME`.
+
+-q,--quiet::
+  Don't print informational messages to the console.
+
+-4,--ipv4::
+  Listen only for connections using IPv4.
+  Default is to accept connection on both IPv6 and IPv4.
+
+== DESCRIPTION
+
+The application *halrmt* supports six primary commands to manipulate the HAL of a remote LinuxCNC instance.
+Of these, the commands `SET` and `GET` contain HAL specific sub-commands.
+The sub-commands are based on the commands supported by *halcmd*(1).
+
+=== COMMANDS
+
+Commands, sub-commands and most parameters are not case sensitive.
+The exceptions are passwords, file paths and text strings.
+
+The supported commands are as follows:
+
+hello <password> <client> [<version>]::
+  If a valid _password_ was entered the server will respond with +
+  `HELLO ACK _<Server Name>_ _<Server Version>_` +
+  where server name and server version are looked up from the implementation.
+  If an invalid _password_ or any other syntax error occurs then the server responds with `HELLO NAK`.
+
+get <sub-command> [args...]::
+  The get command includes one of the HAL sub-commands,
+  described below and zero or more additional parameters.
+
+set <sub-command> [args...]::
+  The set command includes one of the HAL sub-commands,
+  described below and one or more additional parameters.
+
+quit::
+  The quit command disconnects the associated socket connection.
+
+shutdown::
+  The shutdown command disconnects all clients and tells *halrmt* to shut down.
+  This command may only be issued if the `HELLO` has been successfully negotiated.
+  The connection must be enabled.
+
+help [sub-command]::
+  The help command will return information in text over the network connection.
+  If no parameters are specified, it will itemize the available commands.
+  If a command is specified, it will provide usage information for the specified command.
+  Command `HELP` will respond regardless of whether a `HELLO` has been successfully negotiated.
+
+=== SUBCOMMANDS
+
+A 'pattern' is a glob pattern as the shell implements it.
+Backslash characters in a 'pattern' are not special (don't escape) and are case insensitive.
+
+set addf <name> <thread> [arg [arg...]]::
+  Adds the function specified by _name_, to the thread specified by _thread_.
+  Optional parameters may be specified by _arg_.
+
+get comp <name>::
+  Returns the component matching the specified _name_.
+
+get comps [pattern]::
+  Returns information about all components matching _pattern_.
+  If no _pattern_ is specified then all components are returned.
+
+set delf <name> <thread>::
+  Removes the function specified by _name_ from the thread specified by _thread_.
+
+set delsig <signalname>|all::
+  Deletes the signal specified by _signalname_.
+  Specifying 'all' will remove all signals in the system.
+
+get echo::
+set echo {on|off}::
+  With get will return the current echo state.
+  With set, sets the echo state to the supplied argument.
+  When echo is on, all commands will be echoed upon receipt.
+  The _echo_ state is local to each connection. +
+  The echoed line is INI-variable expanded if `SET EXPAND` is set to 'On'.
+  This allows you to see the actual command being executed.
+
+get enable::
+set enable <pwd>|off::
+  With get will return 'On' or 'Off' to indicate whether the current connection is enabled to perform control functions.
+  With set and a valid password, the current connection is enabled for control functions.
+  The argument 'OFF' may not be used as a password and disables control functions for this connection.
+
+get expand::
+set expand {on|off}::
+  Get or set INI-file variable expansion.
+  Setting the INI-file expansion to _on_ will pre-process every input line and substitute variables.
+  An INI-file variable is specified by `[SECTION]VAR` or `[SECTION](VAR)`.
+  Not using parentheses requires you to have trailing white-space or be at the end of the line.
+  INI-file expansion defaults to off and requires a valid INI-file.
+  Enabling expansion with no or an invalid INI-file will expand to an empty string.
+  Expansion is applied to the input line _before_ it is tokenized.
+  That means that all commands and sub-commands are subject to expansion.
+  Everything typed as input is first expanded before processed.
+  The _expand_ state is local to each connection.
+
+get funct <name>::
+  Returns all information about the parameter matching the specified _name_.
+
+get functs [pattern]::
+  Returns information about functions matching _pattern_.
+  If no _pattern_ is specified then all functions are returned.
+
+get ini <var> <section>::
+  Return the variable \[__section__]_var_ from the current INI-file.
+
+get inifile::
+set inifile <filename>::
+  Gets the current active INI-file's name or sets the active INI-file to _filename_.
+  A test is performed to validate the new INI-file when set.
+  Setting the INI-file is local to the connection.
+
+set linkps <pinname> [<signalname>]::
+  Add _pinname_ to signal with _signalname_.
+  Will act as `SET UNLINKP _pinname_` if no _signalname_ is provided.
+
+set linksp <signalname> <pinname>::
+  Add _pinname_ to signal with _signalname_.
+
+set loadrt <compname> [arg [arg...]]::
+  Load the real-time component _compname_ with optional arguments.
+  The real-time environment must have been started or an error will be returned.
+
+set loadusr [flags] <program> [arg [arg...]]::
+  Loads the user component _program_ and passes any optional arguments.
+  The _flags_ are on or more of:
+  * *-W* - to wait for the component to become ready.
+    The component is assumed to have the same name as the first argument of the command.
+    Use *-n* to override the component name to look for.
+  * *-n* _name_ - to wait for the component, which will have the given _name_.
+  * *-w* - to wait for the program to exit
+  * *-i* - to ignore the program return value (with *-w*)
+
+get lock::
+set lock {all|load|config|params|run|tune|none}::
+  Gets the current HAL lock value or sets the HAL lock of the argument's value.
+  The _tune_ value is a combination of _load_ and _config_.
+  The values _all_, _none_ and _tune_ override any other values in the lock that may be present.
+  Doing `SET LOCK none` is equivalent to `SET UNLOCK all`.
+
+get net <signalname>::
+set net <signalname> <pinname> [pinname [pinname...]]::
+  Get shows all the pins connected to _signalname_.
+  Set creates a signal _signalname_ and adds all the _pinname_ pins to the signal.
+
+set newsig <signalname> <type>::
+  Creates the signal specified by _signalname_ and of type specified by _type_.
+
+get param <paramname>::
+  Returns all information about the parameter matching the specified _paramname_.
+
+get params [pattern]::
+  Returns information about parameters matching _pattern_.
+  If no _pattern_ is specified then all parameters are returned.
+
+get paramval <paramname>::
+  Returns just the value of the parameter matching the specified _paramname_.
+
+get paramvals [pattern]::
+  Returns only value information about all parameters matching _pattern_.
+  If no _pattern_ is specified then all parameters are returned.
+
+get pin <pinname>::
+ Returns all information about the pin matching the specified _pinname_.
+
+get pins [pattern]::
+  Returns all information about all pins matching _pattern_.
+  If no _pattern_ is specified then all pins are returned.
+
+get pinval <pinname>::
+  Returns the value of the pin matching the specified _pinname_.
+
+get pinvals [pattern]::
+  Returns only value information about all pins matching _pattern_.
+  If no _pattern_ is specified then all pins are returned.
+
+set save {all|comp|sig|link|linka|net|neta|param|thread} [<filename>]::
+  Will return the saved content on the connection if no filename is provided.
+  Saves the specified set of data to file _filename_ instead if provided.
+
+set setp <pinname|paramname> <value>::
+  Sets the pin or parameter specified by _pinname_/_paramname_ to the value specified by _value_.
+
+set sets <signalname> <value>::
+  Sets the signal specified by _signalname_ to the value specified by _value_.
+
+get signal <signalname>::
+  Returns all information about the pin matching the specified _signalname_.
+
+get signals [pattern]::
+  Returns all information about all signals matching _pattern_.
+  If no _pattern_ is specified then all signals are returned.
+
+get sigval <signalname>::
+  Returns just the value of the signal matching the specified _signalname_.
+
+get sigvals [pattern]::
+  Returns only value information about all signals matching _pattern_.
+  If no _pattern_ is specified then all signals are returned.
+
+set start::
+  Start the real-time threads.
+  The real-time environment must have been started or an error will be returned.
+
+set stop::
+  Stop the real-time threads.
+  The real-time environment must have been started or an error will be returned.
+
+get time::
+  Returns the time, in seconds, from the start of the epoch.
+  The starting time depends on the platform.
+
+get timestamp::
+set timestamp {on|off} [{on|off}]::
+  Enable or disable printing of a timestamp on messages sent back from the server to the user.
+  The optional format argument selects human readable date/time format and seconds since the epoch.
+  The format prints seconds when on and human readable when off.
+
+get thread <name>::
+  Returns all information about the thread matching the specified _name_.
+
+get threads [pattern]::
+  Returns all information about all threads matching _pattern_.
+  If no _pattern_ is specified then all threads are returned.
+
+set unlinkp <pinname>::
+  Unlinks the specified _pinname_ from any signal it may be attached to.
+
+set unload <compname>::
+  Unloads the real-time component _compname_.
+  The real-time environment must have been started or an error will be returned.
+
+set unlock {all|load|config|params|run|tune|none}::
+  Removes the HAL lock of the argument's value.
+  The _tune_ value is a combination of _load_ and _config_.
+  Removing _none_ has no effect but may be useful in scripting.
+
+get verbose::
+set verbose on | off::
+  With get will return the current verbose state.
+  With set, sets the verbose state to the supplied argument.
+  When verbose mode is on, all `SET` commands return positive acknowledgement in the form `SET <sub-cmd> ACK`.
+  In addition, text error messages will be issued when in verbose mode.
+  The _verbose_ state is local to each connection.
+
+== SEE ALSO
+
+*linuxcnc*(1),
+*halcmd*(1).
+
+Much more information about LinuxCNC and HAL is available in the
+LinuxCNC and HAL User Manuals, found at /usr/share/doc/LinuxCNC/.
+
+== BUGS
+
+Probably, but it has been mostly rewritten after the last incarnation incurred som bit-rot and was deemed non-functional.
+
+== AUTHOR
+
+This man page written by Andy Pugh, as part of the LinuxCNC project.
+Manual page updated by B.Stultiens after the rewrite.
+
+== REPORTING BUGS
+
+Report bugs at https://github.com/LinuxCNC/linuxcnc/issues.
+
+== COPYRIGHT
+
+Copyright © 2020 Andy Pugh. +
+Copyright © 2026 B.Stultiens.
+
+This is free software; see the source for copying conditions. There is
+NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR
+PURPOSE.

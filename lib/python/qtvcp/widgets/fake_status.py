@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 # -*- encoding: utf-8 -*-
 #
 #    Copyright 2020 Chris Morley
@@ -17,13 +17,12 @@
 #    along with this program; if not, write to the Free Software
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 #
-# This program is used to fake the status of linuxcnc in python fot the graphics display
+# This program is used to fake the status of linuxcnc in python for the graphics display
 # in qtvcp. Now in designer it shows a fake display of an xyz machine.
 # you could probably extends this to update some attributes and fake tool movement on a demo display
 #
 # most entries are default, a few, for axes and joints, to make an XYZ machine
 
-import linuxcnc
 class fakeStatus():
     def __init__(self):
 
@@ -63,7 +62,7 @@ class fakeStatus():
         self.g92_offset = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         self.gcodes = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         self.homed = (0, 0, 0, 0, 0, 0, 0, 0, 0)
-        self.id = 0
+        self.motion_id = 0
         self.inpos = False
         self.input_timeout = False
         self.interp_state = 0
@@ -75,8 +74,6 @@ class fakeStatus():
         self.kinematics_type = 1
         self.limit = (0, 0, 0, 0, 0, 0, 0, 0, 0)
         self.linear_units = 0.0393700787402
-        self.lube = 0
-        self.lube_level = 0
         self.max_acceleration = 0.0
         self.max_velocity = 0.0
         self.mcodes = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0)

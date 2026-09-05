@@ -1,4 +1,4 @@
-//   This is a component for EMC2 HAL
+//   This is a component for LinuxCNC HAL
 //   Copyright 2008 Paul Willutzki <paul[at]willutzki[dot]de>
 //
 //   This program is free software; you can redistribute it and/or
@@ -15,85 +15,85 @@
 //   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
 component joyhandle "sets nonlinear joypad movements, deadbands and scales";
-pin in float in;
-pin out float out;
-param rw float power = 2.0;
-param rw float deadband = 0.;
-param rw float scale = 1.;
-param rw float offset = 0.;
-param rw bit inverse = 0;	
+pin in real in;
+pin out real out;
+param rw real power = 2.0;
+param rw real deadband = 0.;
+param rw real scale = 1.;
+param rw real offset = 0.;
+param rw bool inverse = 0;
 
 description """
-The component \\fBjoyhandle\\fR uses the following formula for a non linear joypad movements:
+The component *joyhandle* uses the following formula for a non linear joypad movements:
 
-\\fBy = (scale * (a*x^power + b*x)) + offset\\fR
+  y = (scale * (a * x^power + b * x)) + offset
 
 The parameters a and b are adjusted in such a way, that the function starts at (deadband,offset) and ends at (1,scale+offset).
 
-Negative values will be treated point symetrically to origin. Values \-deadband < x < +deadband will be set to zero.
+Negative values will be treated point symmetrically to origin. Values -deadband < x < +deadband will be set to zero.
 
-Values x > 1 and x < \-1 will be skipped to \\(+-(scale+offset). Invert transforms the function to a progressive movement.
+Values x > 1 and x < -1 will be skipped to ±(scale+offset). Invert transforms the function to a progressive movement.
 
 With power one can adjust the nonlinearity (default = 2). Default for deadband is 0.
 
-Valid values are: power >= 1.0 (reasonable values are 1.x .. 4\(hy5, take higher power\(hyvalues for higher deadbands (>0.5), if you want to start with a nearly horizontal slope), 0 <= deadband < 0.99 (reasonable 0.1).
+Valid values are: power ≥ 1.0 (reasonable values are 1.x .. 4-5, take higher power-values for higher deadbands (>0.5), if you want to start with a nearly horizontal slope), 0 ≤ deadband < 0.99 (reasonable 0.1).
 
 An additional offset component can be set in special cases (default = 0).
 
 All values can be adjusted for each instance separately.
 """;
 
+option period no;
 function _;
 license "GPL";
+author "Paul Willutzki";
 ;;
 #include <rtapi_math.h>
 
 FUNCTION(_) {
-double p,a,b,alin,clin,xm,ym,xinv,yinv;
+rtapi_real p,a,b,alin,clin,xm,ym,xinv,yinv;
 
-if (power < 1.0) power =1.0;
+rtapi_real pwr = power;
+if (pwr < 1.0) power_set(pwr = 1.0);
 
-if (deadband >= 0.99) deadband = 0.99;
-else if (deadband <= 0.) deadband = 0.;
+rtapi_real ddbd = deadband;
+if (ddbd >= 0.99) deadband_set(ddbd = 0.99);
+else if (ddbd <= 0.0) deadband_set(ddbd = 0.0);
 
-p = power - 1.;
-a = -1./(pow(deadband,p)-1.);
-b = 1. - a;
-alin = -scale/(deadband-1);
-clin = 1.*(scale+offset-alin);
+p = pwr - 1.0;
+a = -1.0/(pow(ddbd,p)-1.0);
+b = 1.0 - a;
+alin = -scale/(ddbd-1);
+clin = 1.0*(scale+offset-alin);
 
-if (in >= 1.) out = scale + offset;
-else if ((in <= deadband) && (in >= (-1*deadband))) out = 0.;
-else if (in <= -1.) out = -scale - offset;
-else if ((in > deadband) && (in < 1.))
-    {
-	if (power == 1.) out=alin*in + clin;
- 	else {
-		if (inverse == 0) out = scale*(a*pow(in,power) + b*in) + offset;
-		else {
-			xm = (deadband+1)/2;
-        		ym = alin*xm + clin;
-        		xinv = 2*xm-in;
-        		yinv = scale*(a*pow(xinv,power) + b*xinv) + offset;
-        		out =2*ym-yinv;
-		     }
-	     }
-     }
-else if ((in < (-1.*deadband)) && (in > -1.))
-    {
-	if (power == 1.) out=-1.*(alin*-1.*in + clin);
- 	else {
-		if (inverse == 0) out = -1*(scale*(a*pow((-1.*in),power) - b*in) + offset);
-		else {
-			xm = (deadband+1)/2;
-        		ym = alin*xm + clin;
-        		xinv = 2*xm+in;
-        		yinv = scale*(a*pow(xinv,power) + b*xinv) + offset;
-        		out =-2*ym-yinv;
-		     }
-	     }
-     }
-else out = 0.;
- 
-// out = scale*(a*pow(in,power) + b*in) + offset;
+if (in >= 1.0) out_set(scale + offset);
+else if ((in <= ddbd) && (in >= (-1*ddbd))) out_set(0.0);
+else if (in <= -1.0) out_set(-scale - offset);
+else if ((in > ddbd) && (in < 1.0)) {
+    if (pwr == 1.0) out_set(alin*in + clin);
+    else {
+        if (inverse == 0) out_set(scale*(a*pow(in,pwr) + b*in) + offset);
+        else {
+            xm = (ddbd+1)/2;
+            ym = alin*xm + clin;
+            xinv = 2*xm-in;
+            yinv = scale*(a*pow(xinv,pwr) + b*xinv) + offset;
+            out_set(2*ym-yinv);
+        }
+    }
+} else if ((in < (-1.0*ddbd)) && (in > -1.0)) {
+    if (pwr == 1.0) out_set(-1.0*(alin*-1.0*in + clin));
+    else {
+        if (inverse == 0) out_set(-1*(scale*(a*pow((-1.0*in),pwr) - b*in) + offset));
+        else {
+            xm = (ddbd+1)/2;
+            ym = alin*xm + clin;
+            xinv = 2*xm+in;
+            yinv = scale*(a*pow(xinv,pwr) + b*xinv) + offset;
+            out_set(-2*ym-yinv);
+        }
+    }
+} else out_set(0.0);
+
+// out = scale*(a*pow(in,pwr) + b*in) + offset;
 }

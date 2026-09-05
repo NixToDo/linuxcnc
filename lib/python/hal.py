@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim: sts=4 sw=4 et
 
 """
@@ -29,6 +29,26 @@ KeyboardInterrupt exception will be raised.
 
 import _hal
 from _hal import *
+from _hal import query
+import sys
+import warnings
+import lcnc_realtime
+
+# _hal.query is a submodule, not a plain attribute. Registering it in
+# sys.modules under its dotted name makes 'import hal.query' and 'from hal
+# import query' work as they would for a real package.
+sys.modules['hal.query'] = query
+
+def __getattr__(name):
+    if name == 'is_rt':
+        warnings.warn(f"{name} is deprecated, use lcnc_realtime.verify() instead", FutureWarning, stacklevel=2)
+        return lcnc_realtime.verify()
+
+    if name == 'is_sim':
+        warnings.warn(f"{name} is deprecated, use lcnc_realtime.verify() instead", FutureWarning, stacklevel=2)
+        return not lcnc_realtime.verify()
+
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 class _ItemWrap(object):
     def __new__(cls, item):
@@ -40,6 +60,10 @@ class _ItemWrap(object):
     def _item_wrap(self, item):
         for f in ['get', 'set', 'get_type', 'get_name', 'get_dir', 'is_pin', '__repr__']:
             setattr(self, f, getattr(item, f))
+        # Only ports can use the extra methods
+        if _hal.HAL_PORT == item.get_type():
+            for f in ['write', 'read', 'peek', 'peek_commit', 'clear', 'size']:
+                setattr(self, f, getattr(item, f))
         return self
 
     def __init__(self, item):
@@ -69,3 +93,4 @@ class component(_hal.component):
 
     def getpin(self, *a, **kw): return Pin(_hal.component.getpin(self, *a, **kw))
     def getparam(self, *a, **kw): return Param(_hal.component.getparam(self, *a, **kw))
+    def getpins(self, *a, **kw): return _hal.component.getpins(self, *a, **kw)

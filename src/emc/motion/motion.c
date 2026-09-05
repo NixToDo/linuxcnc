@@ -10,19 +10,24 @@
 ********************************************************************/
 
 #include <stdarg.h>
-#include "rtapi.h"		/* RTAPI realtime OS API */
-#include "rtapi_app.h"		/* RTAPI realtime module decls */
-#include "rtapi_string.h"       /* memset */
-#include "hal.h"		/* decls for HAL implementation */
+#include <rtapi.h>		/* RTAPI realtime OS API */
+#include <rtapi_app.h>		/* RTAPI realtime module decls */
+#include <rtapi_string.h>       /* memset */
+#include <rtapi_math.h>
+#include <hal.h>		/* decls for HAL implementation */
+
+#include "../tp/tp.h"
+#include "../tp/sp_scurve.h"	/* sp_scurve_cleanup() at module exit */
 #include "motion.h"
-#include "motion_debug.h"
 #include "motion_struct.h"
 #include "mot_priv.h"
-#include "rtapi_math.h"
 #include "homing.h"
+#include "axis.h"
 
 // Mark strings for translation, but defer translation to userspace
 #define _(s) (s)
+
+#define NOT_INITIALIZED -1
 
 /***********************************************************************
 *                    KERNEL MODULE PARAMETERS                          *
@@ -54,10 +59,25 @@ static int num_joints = EMCMOT_MAX_JOINTS;	/* default number of joints present *
 RTAPI_MP_INT(num_joints, "number of joints used in kinematics");
 static int num_extrajoints = 0;	/* default number of extra joints present */
 RTAPI_MP_INT(num_extrajoints, "number of extra joints (not used in kinematics)");
-static int num_dio = DEFAULT_DIO;	/* default number of motion synched DIO */
+
+static int num_dio = NOT_INITIALIZED;
 RTAPI_MP_INT(num_dio, "number of digital inputs/outputs");
-static int num_aio = DEFAULT_AIO;	/* default number of motion synched AIO */
+static char *names_din[EMCMOT_MAX_DIO] = {0,};
+RTAPI_MP_ARRAY_STRING(names_din, EMCMOT_MAX_DIO, "names of digital inputs");
+static char *names_dout[EMCMOT_MAX_DIO] = {0,};
+RTAPI_MP_ARRAY_STRING(names_dout, EMCMOT_MAX_DIO, "names of digital outputs");
+
+static int num_aio = NOT_INITIALIZED;
 RTAPI_MP_INT(num_aio, "number of analog inputs/outputs");
+static char *names_ain[EMCMOT_MAX_AIO] = {0,};
+RTAPI_MP_ARRAY_STRING(names_ain, EMCMOT_MAX_AIO, "names of analog inputs");
+static char *names_aout[EMCMOT_MAX_AIO] = {0,};
+RTAPI_MP_ARRAY_STRING(names_aout, EMCMOT_MAX_AIO, "names of analog outputs");
+
+static int num_misc_error = NOT_INITIALIZED;
+RTAPI_MP_INT(num_misc_error, "number of misc error inputs");
+static char *names_misc_errors[EMCMOT_MAX_MISC_ERROR] = {0,};
+RTAPI_MP_ARRAY_STRING(names_misc_errors, EMCMOT_MAX_MISC_ERROR, "names of errors");
 
 static int unlock_joints_mask = 0;/* mask to select joints for unlock pins */
 RTAPI_MP_INT(unlock_joints_mask, "mask to select joints for unlock pins");
@@ -68,18 +88,8 @@ RTAPI_MP_INT(unlock_joints_mask, "mask to select joints for unlock pins");
 /* pointer to emcmot_hal_data_t struct in HAL shmem, with all HAL data */
 emcmot_hal_data_t *emcmot_hal_data = 0;
 
-/* pointer to joint data */
-emcmot_joint_t *joints = 0;
-
-/* pointer to axis data */
-emcmot_axis_t *axes = 0;
-
-#ifndef STRUCTS_IN_SHMEM
 /* allocate array for joint data */
-emcmot_joint_t joint_array[EMCMOT_MAX_JOINTS];
-/* allocate array for axis data */
-emcmot_axis_t axis_array[EMCMOT_MAX_AXIS];
-#endif
+emcmot_joint_t joints[EMCMOT_MAX_JOINTS];
 
 /*
   Principles of communication:
@@ -98,7 +108,7 @@ emcmot_struct_t *emcmotStruct = 0;
 struct emcmot_command_t *emcmotCommand = 0;
 struct emcmot_status_t *emcmotStatus = 0;
 struct emcmot_config_t *emcmotConfig = 0;
-struct emcmot_debug_t *emcmotDebug = 0;
+struct emcmot_internal_t *emcmotInternal = 0;
 struct emcmot_error_t *emcmotError = 0;	/* unused for RT_FIFO */
 
 /***********************************************************************
@@ -110,10 +120,15 @@ static int emc_shmem_id;	/* the shared memory ID */
 
 static int mot_comp_id;	/* component ID for motion module */
 
+/* Number of digital and analog IO pins for named pins */
+static int num_dout = NOT_INITIALIZED;
+static int num_din = NOT_INITIALIZED;
+static int num_aout = NOT_INITIALIZED;
+static int num_ain = NOT_INITIALIZED;
+
 /***********************************************************************
 *                   LOCAL FUNCTION PROTOTYPES                          *
 ************************************************************************/
-
 /* init_hal_io() exports HAL pins and parameters making data from
    the realtime control module visible and usable by the world
 */
@@ -126,16 +141,13 @@ static int export_joint(int num,           joint_hal_t * addr);
 // additional halpins for extrajoints:
 static int export_extrajoint(int num, extrajoint_hal_t * addr);
 
-static int export_axis(char c, axis_hal_t  * addr);
 static int export_spindle(int num, spindle_hal_t * addr);
 
 /* init_comm_buffers() allocates and initializes the command,
-   status, and error buffers used to communicate witht the user
+   status, and error buffers used to communicate with the user
    space parts of emc.
 */
 static int init_comm_buffers(void);
-
-/* functions called by init_comm_buffers() */
 
 /* init_threads() creates realtime threads, exports functions to
    do the realtime control, and adds the functions to the threads.
@@ -146,6 +158,8 @@ static int init_threads(void);
 static int setTrajCycleTime(double secs);
 static int setServoCycleTime(double secs);
 
+static int module_intfc(void);
+static int tp_init(void);
 /***********************************************************************
 *                     PUBLIC FUNCTION CODE                             *
 ************************************************************************/
@@ -158,7 +172,7 @@ void switch_to_teleop_mode(void) {
     emcmot_joint_t *joint;
 
     if (emcmotConfig->kinType != KINEMATICS_IDENTITY) {
-        if (!checkAllHomed()) {
+        if (!get_allhomed()) {
             reportError(_("all joints must be homed before going into teleop mode"));
             return;
         }
@@ -169,8 +183,8 @@ void switch_to_teleop_mode(void) {
         if (joint != 0) { joint->free_tp.enable = 0; }
     }
 
-    emcmotDebug->teleoperating = 1;
-    emcmotDebug->coordinating  = 0;
+    emcmotInternal->teleoperating = 1;
+    emcmotInternal->coordinating  = 0;
 }
 
 
@@ -183,34 +197,120 @@ void emcmot_config_change(void)
     }
 }
 
+static rtapi_msg_handler_t old_handler = NULL;
+
 void reportError(const char *fmt, ...)
 {
     va_list args;
 
     va_start(args, fmt);
+
+    //Report trough emcmotError() so they are shown
+    //in the gui in the configured language.
     emcmotErrorPutfv(emcmotError, fmt, args);
+
     va_end(args);
+
+
+    //Report trough the old_handler which is typically
+    //the rtapi handler. These messages are shown on the console.
+    if(old_handler){
+        //We must add a \n due to reportError() strings normally
+        //don't have a newline at the end but rtapi_print() strings
+        //need one.
+        char fmt_tmp[EMCMOT_ERROR_LEN];
+        size_t fmt_len = strlen(fmt);
+        //Manually check string length and truncate if it is to long
+        if(fmt_len < EMCMOT_ERROR_LEN-1){
+            memcpy(fmt_tmp, fmt, fmt_len);
+            fmt_tmp[fmt_len+0] = '\n';
+            fmt_tmp[fmt_len+1] = '\0';
+        }else{
+            memcpy(fmt_tmp, fmt, EMCMOT_ERROR_LEN-2);
+            fmt_tmp[EMCMOT_ERROR_LEN-2] = '\n';
+            fmt_tmp[EMCMOT_ERROR_LEN-1] = '\0';
+        }
+
+        va_start(args, fmt);
+        old_handler(RTAPI_MSG_ERR, fmt_tmp, args);
+        va_end(args);
+    }
 }
 
 #ifndef va_copy
 #define va_copy(dest, src) ((dest)=(src))
 #endif
 
-static rtapi_msg_handler_t old_handler = NULL;
 static void emc_message_handler(msg_level_t level, const char *fmt, va_list ap)
 {
     va_list apc;
+    // False positive. Cppcheck does not seem to know the properties of va_copy()
+    // cppcheck-suppress va_list_usedBeforeStarted
     va_copy(apc, ap);
-    if(level == RTAPI_MSG_ERR) emcmotErrorPutfv(emcmotError, fmt, apc);
-    if(old_handler) old_handler(level, fmt, ap);
+
+    //Report errors trough emcmotError() so they are shown
+    //in the gui in the configured language.
+    if(level == RTAPI_MSG_ERR){
+        // cppcheck-suppress va_list_usedBeforeStarted
+        emcmotErrorPutfv(emcmotError, fmt, apc);
+    }
+
+    //Report everything trough the old_handler which is typically
+    //the rtapi handler. These messages are shown on the console.
+    if(old_handler){
+        old_handler(level, fmt, ap);
+    }
+
+    // cppcheck-suppress va_list_usedBeforeStarted
     va_end(apc);
+}
+
+int count_names(char *names[], int max_length)
+{
+    int count = 0;
+    while (count < max_length && names[count] && *names[count])
+        count++;
+    return count;
+}
+
+static int module_intfc() {
+    homeMotFunctions(emcmotSetRotaryUnlock
+                    ,emcmotGetRotaryIsUnlocked
+                    );
+
+    tpMotFunctions(emcmotDioWrite
+                  ,emcmotAioWrite
+                  ,emcmotSetRotaryUnlock
+                  ,emcmotGetRotaryIsUnlocked
+                  ,axis_get_vel_limit
+                  ,axis_get_acc_limit
+                  );
+
+    tpMotData(emcmotStatus
+             ,emcmotConfig
+             );
+    return 0;
+}
+
+static int tp_init() {
+    if (-1 == tpCreate(&emcmotInternal->coord_tp, DEFAULT_TC_QUEUE_SIZE,mot_comp_id)) {
+        rtapi_print_msg(RTAPI_MSG_ERR,
+            "MOTION: tpCreate failed\n");
+        return -1;
+    }
+    // tpInit is called from tpCreate
+    tpSetCycleTime(&emcmotInternal->coord_tp,  emcmotConfig->trajCycleTime);
+    tpSetVmax(     &emcmotInternal->coord_tp,  emcmotStatus->vel, emcmotStatus->vel);
+    tpSetAmax(     &emcmotInternal->coord_tp,  emcmotStatus->acc);
+    tpSetPos(      &emcmotInternal->coord_tp, &emcmotStatus->carte_pos_cmd);
+    return 0;
 }
 
 int rtapi_app_main(void)
 {
     int retval;
 
-    rtapi_print_msg(RTAPI_MSG_INFO, "MOTION: init_module() starting...\n");
+    rtapi_print_msg(RTAPI_MSG_INFO, "MOTION: rtapi_app_main() starting...\n");
 
     /* connect to the HAL and RTAPI */
     mot_comp_id = hal_init("motmod");
@@ -250,19 +350,61 @@ int rtapi_app_main(void)
     }
     motion_num_spindles = num_spindles;
 
+    if (num_dio != NOT_INITIALIZED && (names_dout[0] || names_din[0])) {
+      rtapi_print_msg(RTAPI_MSG_ERR, _("MOTION: Can't specify both names and number for digital pins\n"));
+      return -1;
+    }
+    if (names_dout[0] || names_din[0]) {
+      num_dout = count_names(names_dout, EMCMOT_MAX_DIO);
+      num_din = count_names(names_din, EMCMOT_MAX_DIO);
+      num_dio = (num_din > num_dout) ? num_din : num_dout;
+    } else if (num_dio == NOT_INITIALIZED) {
+      num_dio = DEFAULT_DIO;
+    }
+
+
     if (( num_dio < 1 ) || ( num_dio > EMCMOT_MAX_DIO )) {
 	rtapi_print_msg(RTAPI_MSG_ERR,
 	    _("MOTION: num_dio is %d, must be between 1 and %d\n"), num_dio, EMCMOT_MAX_DIO);
 	hal_exit(mot_comp_id);
 	return -1;
     }
-    
+
+  if (num_aio != NOT_INITIALIZED && (names_aout[0] || names_ain[0])) {
+    rtapi_print_msg(RTAPI_MSG_ERR, _("MOTION: Can't specify both names and number for analog pins\n"));
+    return -1;
+  }
+  if (names_aout[0] || names_ain[0]) {
+    num_aout = count_names(names_aout, EMCMOT_MAX_AIO);
+    num_ain = count_names(names_ain, EMCMOT_MAX_AIO);
+    num_aio = (num_ain > num_aout) ? num_ain : num_aout;
+  } else if (num_aio == NOT_INITIALIZED) {
+    num_aio = DEFAULT_AIO;
+  }
+
     if (( num_aio < 1 ) || ( num_aio > EMCMOT_MAX_AIO )) {
 	rtapi_print_msg(RTAPI_MSG_ERR,
 	    _("MOTION: num_aio is %d, must be between 1 and %d\n"), num_aio, EMCMOT_MAX_AIO);
 	hal_exit(mot_comp_id);
 	return -1;
     }
+
+  if (num_misc_error != NOT_INITIALIZED && (names_misc_errors[0])) {
+    rtapi_print_msg(RTAPI_MSG_ERR, _("MOTION: Can't specify both names and number for misc error\n"));
+    return -1;
+  }
+  if (names_misc_errors[0]) {
+    num_misc_error = count_names(names_misc_errors, EMCMOT_MAX_MISC_ERROR);
+  } else if (num_misc_error == NOT_INITIALIZED) {
+    num_misc_error = DEFAULT_MISC_ERROR;
+  }
+
+  if (( num_misc_error < 0 ) || ( num_misc_error > EMCMOT_MAX_MISC_ERROR )) {
+    rtapi_print_msg(RTAPI_MSG_ERR,
+                    _("MOTION: num_misc_error is %d, must be between 0 and %d\n"), num_misc_error, EMCMOT_MAX_MISC_ERROR);
+    hal_exit(mot_comp_id);
+    return -1;
+  }
 
     /* initialize/export HAL pins and parameters */
     retval = init_hal_io();
@@ -280,6 +422,15 @@ int rtapi_app_main(void)
 	return -1;
     }
 
+    if (module_intfc()) {
+	rtapi_print_msg(RTAPI_MSG_ERR, _("MOTION: module_intfc() failed\n"));
+	return -1;
+    }
+    if (tp_init()) {
+	rtapi_print_msg(RTAPI_MSG_ERR, _("MOTION: tp_init() failed\n"));
+	return -1;
+    }
+
     /* set up for realtime execution of code */
     retval = init_threads();
     if (retval != 0) {
@@ -288,7 +439,17 @@ int rtapi_app_main(void)
 	return -1;
     }
 
-    rtapi_print_msg(RTAPI_MSG_INFO, "MOTION: init_module() complete\n");
+    if (homing_init(mot_comp_id,
+                    emcmotConfig->servoCycleTime,
+                    num_joints,
+                    num_extrajoints,
+                    joints)) {
+	rtapi_print_msg(RTAPI_MSG_ERR, _("MOTION: homing_init() failed\n"));
+	hal_exit(mot_comp_id);
+	return -1;
+    }
+
+    rtapi_print_msg(RTAPI_MSG_INFO, "MOTION: rtapi_app_main() complete\n");
 
     hal_ready(mot_comp_id);
 
@@ -310,6 +471,8 @@ void rtapi_app_exit(void)
 	rtapi_print_msg(RTAPI_MSG_ERR,
 	    _("MOTION: hal_stop_threads() failed, returned %d\n"), retval);
     }
+    /* free the S-curve planner + Ruckig pool (threads are stopped, safe) */
+    sp_scurve_cleanup();
     /* free shared memory */
     retval = rtapi_shmem_delete(emc_shmem_id, mot_comp_id);
     if (retval < 0) {
@@ -329,15 +492,21 @@ void rtapi_app_exit(void)
 *                         LOCAL FUNCTION CODE                          *
 ************************************************************************/
 
+#define CALL_CHECK(expr) do {           \
+        int _retval;                    \
+        _retval = expr;                 \
+        if (_retval) return _retval;    \
+    } while (0);
+
 /* init_hal_io() exports HAL pins and parameters making data from
    the realtime control module visible and usable by the world
 */
 static int init_hal_io(void)
 {
     int n, retval;
+    int in, out;
     joint_hal_t      *joint_data;
     extrajoint_hal_t *ejoint_data;
-    axis_hal_t       *axis_data;
 
     rtapi_print_msg(RTAPI_MSG_INFO, "MOTION: init_hal_io() starting...\n");
 
@@ -349,158 +518,172 @@ static int init_hal_io(void)
     }
 
     /* export machine wide hal pins */
-    if ((retval = hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->probe_input), mot_comp_id, "motion.probe-input")) != 0) goto error;
-    if ((retval = hal_pin_float_newf(HAL_IN, &(emcmot_hal_data->adaptive_feed), mot_comp_id, "motion.adaptive-feed")) != 0) goto error;
-    if ((retval = hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->feed_hold), mot_comp_id, "motion.feed-hold")) != 0) goto error;
-    if ((retval = hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->feed_inhibit), mot_comp_id, "motion.feed-inhibit")) != 0) goto error;
-    if ((retval = hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->homing_inhibit), mot_comp_id, "motion.homing-inhibit")) != 0) goto error;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->tp_reverse), mot_comp_id, "motion.tp-reverse")) < 0) goto error;
-    if ((retval = hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->enable), mot_comp_id, "motion.enable")) != 0) goto error;
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(emcmot_hal_data->probe_input), 0, "motion.probe-input"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_IN, &(emcmot_hal_data->adaptive_feed), 1.0, "motion.adaptive-feed"));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(emcmot_hal_data->feed_hold), 0, "motion.feed-hold"));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(emcmot_hal_data->feed_inhibit), 0, "motion.feed-inhibit"));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(emcmot_hal_data->homing_inhibit), 0, "motion.homing-inhibit"));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(emcmot_hal_data->jog_inhibit), 0, "motion.jog-inhibit"));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(emcmot_hal_data->jog_stop), 0, "motion.jog-stop"));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(emcmot_hal_data->jog_stop_immediate), 0, "motion.jog-stop-immediate"));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(emcmot_hal_data->tp_reverse), 0, "motion.tp-reverse"));
+    // default value of enable is TRUE, so simple machines can leave it disconnected
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(emcmot_hal_data->enable), 1, "motion.enable"));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(emcmot_hal_data->is_all_homed), 0, "motion.is-all-homed"));
 
     /* state tags pins */
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->feed_upm), mot_comp_id, "motion.feed-upm")) < 0) goto error;
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->feed_upm), 0.0, "motion.feed-upm"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->feed_inches_per_minute), 0.0, "motion.feed-inches-per-minute"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->feed_inches_per_second), 0.0, "motion.feed-inches-per-second"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->feed_mm_per_minute), 0.0, "motion.feed-mm-per-minute"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->feed_mm_per_second), 0.0, "motion.feed-mm-per-second"));
 
     /* export motion-synched digital output pins */
     /* export motion digital input pins */
+    in = 0, out = 0;
+    /* motion synched dio, init to not enabled */
     for (n = 0; n < num_dio; n++) {
-	if ((retval = hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->synch_do[n]), mot_comp_id, "motion.digital-out-%02d", n)) != 0) goto error;
-	if ((retval = hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->synch_di[n]), mot_comp_id, "motion.digital-in-%02d", n)) != 0) goto error;
+        if (n < num_din && names_din[n]) {
+            CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(emcmot_hal_data->synch_di[n]),
+                                        0, "motion.din-%s", names_din[n]));
+        } else {
+            CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(emcmot_hal_data->synch_di[n]),
+                                        0, "motion.digital-in-%02d", in++));
+        }
+        if (n < num_dout && names_dout[n]) {
+            CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(emcmot_hal_data->synch_do[n]),
+                                        0, "motion.dout-%s", names_dout[n]));
+        } else {
+            CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(emcmot_hal_data->synch_do[n]),
+                                        0, "motion.digital-out-%02d",out++));
+        }
     }
 
     /* export motion-synched analog output pins */
     /* export motion analog input pins */
+    in = 0, out = 0;
     for (n = 0; n < num_aio; n++) {
-	if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->analog_output[n]), mot_comp_id, "motion.analog-out-%02d", n)) != 0) goto error;
-	if ((retval = hal_pin_float_newf(HAL_IN, &(emcmot_hal_data->analog_input[n]), mot_comp_id, "motion.analog-in-%02d", n)) != 0) goto error;
+        if (n < num_ain && names_ain[n]) {
+            CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_IN, &(emcmot_hal_data->analog_input[n]),
+                                        0.0, "motion.ain-%s", names_ain[n]));
+        } else {
+            CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_IN, &(emcmot_hal_data->analog_input[n]),
+                                        0.0, "motion.analog-in-%02d", in++));
+        }
+        if (n < num_aout && names_aout[n]) {
+            CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->analog_output[n]),
+                                        0.0, "motion.aout-%s", names_aout[n]));
+        } else {
+            CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->analog_output[n]),
+                                        0.0, "motion.analog-out-%02d", out++));
+        }
+    }
+
+    if (names_misc_errors[0]) {
+        for (n = 0; n < num_misc_error; n++) {
+            if (names_misc_errors[n] == NULL || (*names_misc_errors[n] == 0)) {break;}
+            CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(emcmot_hal_data->misc_error[n]), 0, "motion.err-%s", names_misc_errors[n]));
+        }
+    } else {
+        /* export misc error input pins */
+        for (n = 0; n < num_misc_error; n++) {
+            CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(emcmot_hal_data->misc_error[n]), 0, "motion.misc-error-%02d", n));
+        }
     }
 
     /* export machine wide hal pins */
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->motion_enabled), mot_comp_id, "motion.motion-enabled")) != 0) goto error;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->in_position), mot_comp_id, "motion.in-position")) != 0) goto error;
-    if ((retval = hal_pin_s32_newf(HAL_OUT, &(emcmot_hal_data->motion_type), mot_comp_id, "motion.motion-type")) != 0) goto error;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->coord_mode), mot_comp_id, "motion.coord-mode")) != 0) goto error;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->teleop_mode), mot_comp_id, "motion.teleop-mode")) != 0) goto error;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->coord_error), mot_comp_id, "motion.coord-error")) != 0) goto error;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->on_soft_limit), mot_comp_id, "motion.on-soft-limit")) != 0) goto error;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->current_vel), mot_comp_id, "motion.current-vel")) != 0) goto error;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->requested_vel), mot_comp_id, "motion.requested-vel")) != 0) goto error;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->distance_to_go), mot_comp_id, "motion.distance-to-go")) != 0) goto error;
-    if ((retval = hal_pin_s32_newf(HAL_OUT, &(emcmot_hal_data->program_line), mot_comp_id, "motion.program-line")) != 0) goto error;
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(emcmot_hal_data->motion_enabled), 0, "motion.motion-enabled"));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(emcmot_hal_data->in_position), 0, "motion.in-position"));
+    CALL_CHECK(hal_pin_new_si32(mot_comp_id, HAL_OUT, &(emcmot_hal_data->motion_type), 0, "motion.motion-type"));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(emcmot_hal_data->coord_mode), 0, "motion.coord-mode"));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(emcmot_hal_data->teleop_mode), 0, "motion.teleop-mode"));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(emcmot_hal_data->coord_error), 0, "motion.coord-error"));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(emcmot_hal_data->on_soft_limit), 0, "motion.on-soft-limit"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->current_vel), 0.0, "motion.current-vel"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->requested_vel), 0.0, "motion.requested-vel"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->distance_to_go), 0.0, "motion.distance-to-go"));
+    CALL_CHECK(hal_pin_new_si32(mot_comp_id, HAL_OUT, &(emcmot_hal_data->program_line), 0, "motion.program-line"));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(emcmot_hal_data->jog_is_active), 0, "motion.jog-is-active"));
+
+    /* Standard Interp State Pins */
+    CALL_CHECK(hal_pin_new_si32(mot_comp_id, HAL_OUT, &(emcmot_hal_data->interp_line_number), 0, "motion.interp.line-number"));
+    CALL_CHECK(hal_pin_new_si32(mot_comp_id, HAL_OUT, &(emcmot_hal_data->interp_motion_type), 0, "motion.interp.motion-type"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->interp_feedrate), 0.0, "motion.interp.feedrate"));
+
+    /* New Geometric Metadata Pins */
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->interp_arc_radius), 0.0, "motion.interp.arc-radius"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->interp_arc_center_x), 0.0, "motion.interp.arc-center-x"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->interp_arc_center_y), 0.0, "motion.interp.arc-center-y"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->interp_arc_center_z), 0.0, "motion.interp.arc-center-z"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->interp_straight_heading), 0.0, "motion.interp.heading"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->interp_normal_heading), 0.0, "motion.interp.normal-heading"));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &emcmot_hal_data->iscircle, 0, "motion.interp.iscircle"));
 
     /* export debug parameters */
     /* these can be used to view any internal variable, simply change a line
        in control.c:output_to_hal() and recompile */
-    if ((retval = hal_param_bit_newf(HAL_RO, &(emcmot_hal_data->debug_bit_0), mot_comp_id, "motion.debug-bit-0")) != 0) goto error;
-    if ((retval = hal_param_bit_newf(HAL_RO, &(emcmot_hal_data->debug_bit_1), mot_comp_id, "motion.debug-bit-1")) != 0) goto error;
-    if ((retval = hal_param_float_newf(HAL_RO, &(emcmot_hal_data->debug_float_0), mot_comp_id, "motion.debug-float-0")) != 0) goto error;
-    if ((retval = hal_param_float_newf(HAL_RO, &(emcmot_hal_data->debug_float_1), mot_comp_id, "motion.debug-float-1")) != 0) goto error;
-    if ((retval = hal_param_float_newf(HAL_RO, &(emcmot_hal_data->debug_float_2), mot_comp_id, "motion.debug-float-2")) != 0) goto error;
-    if ((retval = hal_param_float_newf(HAL_RO, &(emcmot_hal_data->debug_float_3), mot_comp_id, "motion.debug-float-3")) != 0) goto error;
-    if ((retval = hal_param_s32_newf(HAL_RO, &(emcmot_hal_data->debug_s32_0), mot_comp_id, "motion.debug-s32-0")) != 0) goto error;
-    if ((retval = hal_param_s32_newf(HAL_RO, &(emcmot_hal_data->debug_s32_1), mot_comp_id, "motion.debug-s32-1")) != 0) goto error;
+    CALL_CHECK(hal_param_new_bool(mot_comp_id, HAL_RO, &(emcmot_hal_data->debug_bit_0), 0, "motion.debug-bit-0"));
+    CALL_CHECK(hal_param_new_bool(mot_comp_id, HAL_RO, &(emcmot_hal_data->debug_bit_1), 0, "motion.debug-bit-1"));
+    CALL_CHECK(hal_param_new_real(mot_comp_id, HAL_RO, &(emcmot_hal_data->debug_float_0), 0.0, "motion.debug-float-0"));
+    CALL_CHECK(hal_param_new_real(mot_comp_id, HAL_RO, &(emcmot_hal_data->debug_float_1), 0.0, "motion.debug-float-1"));
+    CALL_CHECK(hal_param_new_real(mot_comp_id, HAL_RO, &(emcmot_hal_data->debug_float_2), 0.0, "motion.debug-float-2"));
+    CALL_CHECK(hal_param_new_real(mot_comp_id, HAL_RO, &(emcmot_hal_data->debug_float_3), 0.0, "motion.debug-float-3"));
+    CALL_CHECK(hal_param_new_si32(mot_comp_id, HAL_RO, &(emcmot_hal_data->debug_s32_0), 0, "motion.debug-s32-0"));
+    CALL_CHECK(hal_param_new_si32(mot_comp_id, HAL_RO, &(emcmot_hal_data->debug_s32_1), 0, "motion.debug-s32-1"));
 
     // FIXME - debug only, remove later
     // export HAL parameters for some trajectory planner internal variables
     // so they can be scoped
-    if ((retval = hal_param_float_newf(HAL_RO, &(emcmot_hal_data->traj_pos_out), mot_comp_id, "traj.pos_out")) != 0) goto error;
-    if ((retval = hal_param_float_newf(HAL_RO, &(emcmot_hal_data->traj_vel_out), mot_comp_id, "traj.vel_out")) != 0) goto error;
-    if ((retval = hal_param_u32_newf(HAL_RO, &(emcmot_hal_data->traj_active_tc), mot_comp_id, "traj.active_tc")) != 0) goto error;
+    CALL_CHECK(hal_param_new_real(mot_comp_id, HAL_RO, &(emcmot_hal_data->traj_pos_out), 0.0, "traj.pos_out"));
+    CALL_CHECK(hal_param_new_real(mot_comp_id, HAL_RO, &(emcmot_hal_data->traj_vel_out), 0.0, "traj.vel_out"));
+    CALL_CHECK(hal_param_new_ui32(mot_comp_id, HAL_RO, &(emcmot_hal_data->traj_active_tc), 0, "traj.active_tc"));
 
-    for ( n = 0 ; n < 4 ; n++ ) {
-        if ((retval = hal_param_float_newf(HAL_RO, &(emcmot_hal_data->tc_pos[n]), mot_comp_id, "tc.%d.pos", n)) != 0) goto error;
-        if ((retval = hal_param_float_newf(HAL_RO, &(emcmot_hal_data->tc_vel[n]), mot_comp_id, "tc.%d.vel", n)) != 0) goto error;
-        if ((retval = hal_param_float_newf(HAL_RO, &(emcmot_hal_data->tc_acc[n]), mot_comp_id, "tc.%d.acc", n)) != 0) goto error;
+    for (n = 0; n < 4; n++) {
+        CALL_CHECK(hal_param_new_real(mot_comp_id, HAL_RO, &(emcmot_hal_data->tc_pos[n]), 0.0, "tc.%d.pos", n));
+        CALL_CHECK(hal_param_new_real(mot_comp_id, HAL_RO, &(emcmot_hal_data->tc_vel[n]), 0.0, "tc.%d.vel", n));
+        CALL_CHECK(hal_param_new_real(mot_comp_id, HAL_RO, &(emcmot_hal_data->tc_acc[n]), 0.0, "tc.%d.acc", n));
     }
     // end of exporting trajectory planner internals
 
     // export timing related HAL pins so they can be scoped and/or connected
-    if ((retval = hal_pin_u32_newf(HAL_OUT, &(emcmot_hal_data->last_period), mot_comp_id, "motion.servo.last-period")) != 0) goto error;
-#ifdef HAVE_CPU_KHZ
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->last_period_ns), mot_comp_id, "motion.servo.last-period-ns")) != 0) goto error;
-#endif
+    CALL_CHECK(hal_pin_new_ui32(mot_comp_id, HAL_OUT, &(emcmot_hal_data->last_period), 0, "motion.servo.last-period"));
 
     // export timing related HAL pins so they can be scoped
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->tooloffset_x), mot_comp_id, "motion.tooloffset.x")) != 0) goto error;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->tooloffset_y), mot_comp_id, "motion.tooloffset.y")) != 0) goto error;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->tooloffset_z), mot_comp_id, "motion.tooloffset.z")) != 0) goto error;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->tooloffset_a), mot_comp_id, "motion.tooloffset.a")) != 0) goto error;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->tooloffset_b), mot_comp_id, "motion.tooloffset.b")) != 0) goto error;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->tooloffset_c), mot_comp_id, "motion.tooloffset.c")) != 0) goto error;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->tooloffset_u), mot_comp_id, "motion.tooloffset.u")) != 0) goto error;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->tooloffset_v), mot_comp_id, "motion.tooloffset.v")) != 0) goto error;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->tooloffset_w), mot_comp_id, "motion.tooloffset.w")) != 0) goto error;
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->tooloffset_x), 0.0, "motion.tooloffset.x"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->tooloffset_y), 0.0, "motion.tooloffset.y"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->tooloffset_z), 0.0, "motion.tooloffset.z"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->tooloffset_a), 0.0, "motion.tooloffset.a"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->tooloffset_b), 0.0, "motion.tooloffset.b"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->tooloffset_c), 0.0, "motion.tooloffset.c"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->tooloffset_u), 0.0, "motion.tooloffset.u"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->tooloffset_v), 0.0, "motion.tooloffset.v"));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(emcmot_hal_data->tooloffset_w), 0.0, "motion.tooloffset.w"));
 
-    /* initialize machine wide pins and parameters */
-    *(emcmot_hal_data->adaptive_feed) = 1.0;
-    *(emcmot_hal_data->feed_hold) = 0;
-    *(emcmot_hal_data->feed_inhibit) = 0;
-    *(emcmot_hal_data->homing_inhibit) = 0;
-
-    *(emcmot_hal_data->probe_input) = 0;
-    /* default value of enable is TRUE, so simple machines
-       can leave it disconnected */
-    *(emcmot_hal_data->enable) = 1;
-    
-    /* motion synched dio, init to not enabled */
-    for (n = 0; n < num_dio; n++) {
-	 *(emcmot_hal_data->synch_do[n]) = 0;
-	 *(emcmot_hal_data->synch_di[n]) = 0;
+    if (kinematicsSwitchable()) {
+        CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_IN, &(emcmot_hal_data->switchkins_type), 0.0, "motion.switchkins-type"));
     }
-
-    for (n = 0; n < num_aio; n++) {
-	 *(emcmot_hal_data->analog_output[n]) = 0.0;
-	 *(emcmot_hal_data->analog_input[n]) = 0.0;
-    }
-    
-    /*! \todo FIXME - these don't really need initialized, since they are written
-       with data from the emcmotStatus struct */
-    *(emcmot_hal_data->motion_enabled) = 0;
-    *(emcmot_hal_data->in_position) = 0;
-    *(emcmot_hal_data->motion_type) = 0;
-    *(emcmot_hal_data->coord_mode) = 0;
-    *(emcmot_hal_data->teleop_mode) = 0;
-    *(emcmot_hal_data->coord_error) = 0;
-    *(emcmot_hal_data->on_soft_limit) = 0;
-
-    /* init debug parameters */
-    emcmot_hal_data->debug_bit_0 = 0;
-    emcmot_hal_data->debug_bit_1 = 0;
-    emcmot_hal_data->debug_float_0 = 0.0;
-    emcmot_hal_data->debug_float_1 = 0.0;
-    emcmot_hal_data->debug_float_2 = 0.0;
-    emcmot_hal_data->debug_float_3 = 0.0;
-
-    *(emcmot_hal_data->last_period) = 0;
 
     /* export spindle pins and params */
-    for (n=0; n < num_spindles; n++) {
+    for (n = 0; n < num_spindles; n++) {
         retval = export_spindle(n, &(emcmot_hal_data->spindle[n]));
         if (retval != 0){
             rtapi_print_msg(RTAPI_MSG_ERR, _("MOTION: spindle %d pin export failed"), n);
             return -1;
         }
     }
-
     /* export joint pins and parameters */
     for (n = 0; n < num_joints; n++) {
-	joint_data = &(emcmot_hal_data->joint[n]);
-	/* export all vars */
+        joint_data = &(emcmot_hal_data->joint[n]);
+        /* export all vars */
         retval = export_joint(n, joint_data);
-	if (retval != 0) {
-	    rtapi_print_msg(RTAPI_MSG_ERR, _("MOTION: joint %d pin/param export failed\n"), n);
-	    return -1;
-	}
-	*(joint_data->amp_enable) = 0;
+        if (retval != 0) {
+            rtapi_print_msg(RTAPI_MSG_ERR, _("MOTION: joint %d pin/param export failed\n"), n);
+            return -1;
+        }
+        hal_set_bool(joint_data->amp_enable, 0);
 
-	/* We'll init the index model to EXT_ENCODER_INDEX_MODEL_RAW for now,
-	   because it is always supported. */
-    }
-
-    /* export joint home pins (assigned to motion comp)*/
-    retval = export_joint_home_pins(num_joints,mot_comp_id);
-    if (retval != 0) {
-        rtapi_print_msg(RTAPI_MSG_ERR, _("MOTION: export_joint_home_pins failed\n"));
-        return -1;
+        /* We'll init the index model to EXT_ENCODER_INDEX_MODEL_RAW for now,
+           because it is always supported. */
     }
     /* export joint pins and parameters */
     for (n = 0; n < num_extrajoints; n++) {
@@ -512,92 +695,46 @@ static int init_hal_io(void)
         }
     }
 
-    /* export axis pins and parameters */
-    for (n = 0; n < EMCMOT_MAX_AXIS; n++) {
-        char c = "xyzabcuvw"[n];
-        axis_data = &(emcmot_hal_data->axis[n]);
-        if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->axis[n].pos_cmd),
-           mot_comp_id, "axis.%c.pos-cmd",         c)) != 0) goto error;
-        if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->axis[n].teleop_vel_cmd),
-           mot_comp_id, "axis.%c.teleop-vel-cmd",         c)) != 0) goto error;
-        if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->axis[n].teleop_pos_cmd),
-           mot_comp_id, "axis.%c.teleop-pos-cmd",  c)) != 0) goto error;
-        if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->axis[n].teleop_vel_lim),
-           mot_comp_id, "axis.%c.teleop-vel-lim",  c)) != 0) goto error;
-        if ((retval = hal_pin_bit_newf(HAL_OUT,   &(emcmot_hal_data->axis[n].teleop_tp_enable),
-           mot_comp_id, "axis.%c.teleop-tp-enable",c)) != 0) goto error;
-        if ((retval = hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->axis[n].eoffset_enable),
-           mot_comp_id, "axis.%c.eoffset-enable", c)) != 0) return retval;
-        if ((retval = hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->axis[n].eoffset_clear),
-           mot_comp_id, "axis.%c.eoffset-clear", c)) != 0) return retval;
+    CALL_CHECK(axis_init_hal_io(mot_comp_id));
 
-        if ((retval = hal_pin_s32_newf(HAL_IN, &(emcmot_hal_data->axis[n].eoffset_counts),
-           mot_comp_id, "axis.%c.eoffset-counts", c)) != 0) return retval;
-        if ((retval = hal_pin_float_newf(HAL_IN, &(emcmot_hal_data->axis[n].eoffset_scale),
-           mot_comp_id, "axis.%c.eoffset-scale", c)) != 0) return retval;
-
-        if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->axis[n].external_offset),
-           mot_comp_id, "axis.%c.eoffset", c)) != 0) return retval;
-        if ((retval = hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->axis[n].external_offset_requested),
-           mot_comp_id, "axis.%c.eoffset-request", c)) != 0) return retval;
-
-        retval = export_axis(c, axis_data);
-	if (retval != 0) {
-	    rtapi_print_msg(RTAPI_MSG_ERR, _("MOTION: axis %c pin/param export failed\n"), c);
-	    return -1;
-	}
-    }
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->eoffset_limited), mot_comp_id,
-                  "motion.eoffset-limited")) < 0) goto error;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->eoffset_active), mot_comp_id,
-                  "motion.eoffset-active")) < 0) goto error;
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(emcmot_hal_data->eoffset_limited), 0, "motion.eoffset-limited"));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(emcmot_hal_data->eoffset_active), 0, "motion.eoffset-active"));
 
     /* Done! */
-    rtapi_print_msg(RTAPI_MSG_INFO,
-	"MOTION: init_hal_io() complete, %d axes.\n", n);
+    rtapi_print_msg(RTAPI_MSG_INFO,	"MOTION: init_hal_io() complete, %d axes.\n", n);
     return 0;
-
-    error:
-	return retval;
-
 }
 
 static int export_spindle(int num, spindle_hal_t * addr){
-	int retval, msg;
-
-    msg = rtapi_get_msg_level();
+    int msg = rtapi_get_msg_level();
     rtapi_set_msg_level(RTAPI_MSG_WARN);
 
-    if ((retval = hal_pin_bit_newf(HAL_IO, &(addr->spindle_index_enable), mot_comp_id, "spindle.%d.index-enable", num)) != 0) return retval;
-
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->spindle_on), mot_comp_id, "spindle.%d.on", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->spindle_forward), mot_comp_id, "spindle.%d.forward", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->spindle_reverse), mot_comp_id, "spindle.%d.reverse", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->spindle_brake), mot_comp_id, "spindle.%d.brake", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->spindle_speed_out), mot_comp_id, "spindle.%d.speed-out", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->spindle_speed_out_abs), mot_comp_id, "spindle.%d.speed-out-abs", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->spindle_speed_out_rps), mot_comp_id, "spindle.%d.speed-out-rps", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->spindle_speed_out_rps_abs), mot_comp_id, "spindle.%d.speed-out-rps-abs", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->spindle_speed_cmd_rps), mot_comp_id, "spindle.%d.speed-cmd-rps", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_IN, &(addr->spindle_inhibit), mot_comp_id, "spindle.%d.inhibit", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_IN, &(addr->spindle_amp_fault), mot_comp_id, "spindle.%d.amp-fault-in", num)) != 0) return retval;
-    *(addr->spindle_inhibit) = 0;
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IO, &(addr->spindle_index_enable), 0, "spindle.%d.index-enable", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(addr->spindle_on), 0, "spindle.%d.on", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(addr->spindle_forward), 0, "spindle.%d.forward", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(addr->spindle_reverse), 0, "spindle.%d.reverse", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(addr->spindle_brake), 0, "spindle.%d.brake", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->spindle_speed_out), 0.0, "spindle.%d.speed-out", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->spindle_speed_out_abs), 0.0, "spindle.%d.speed-out-abs", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->spindle_speed_out_rps), 0.0, "spindle.%d.speed-out-rps", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->spindle_speed_out_rps_abs), 0.0, "spindle.%d.speed-out-rps-abs", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->spindle_speed_cmd_rps), 0.0, "spindle.%d.speed-cmd-rps", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(addr->spindle_inhibit), 0, "spindle.%d.inhibit", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(addr->spindle_amp_fault), 0, "spindle.%d.amp-fault-in", num));
 
     // spindle orient pins
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->spindle_orient_angle), mot_comp_id, "spindle.%d.orient-angle", num)) < 0) return retval;
-    if ((retval = hal_pin_s32_newf(HAL_OUT, &(addr->spindle_orient_mode), mot_comp_id, "spindle.%d.orient-mode", num)) < 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->spindle_orient), mot_comp_id, "spindle.%d.orient", num)) < 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->spindle_locked), mot_comp_id, "spindle.%d.locked", num)) < 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_IN, &(addr->spindle_is_oriented), mot_comp_id, "spindle.%d.is-oriented", num)) < 0) return retval;
-    if ((retval = hal_pin_s32_newf(HAL_IN, &(addr->spindle_orient_fault), mot_comp_id, "spindle.%d.orient-fault", num)) < 0) return retval;
-    *(addr->spindle_orient_angle) = 0.0;
-    *(addr->spindle_orient_mode) = 0;
-    *(addr->spindle_orient) = 0;
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->spindle_orient_angle), 0.0, "spindle.%d.orient-angle", num));
+    CALL_CHECK(hal_pin_new_si32(mot_comp_id, HAL_OUT, &(addr->spindle_orient_mode), 0, "spindle.%d.orient-mode", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(addr->spindle_orient), 0, "spindle.%d.orient", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(addr->spindle_locked), 0, "spindle.%d.locked", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(addr->spindle_is_oriented), 0, "spindle.%d.is-oriented", num));
+    CALL_CHECK(hal_pin_new_si32(mot_comp_id, HAL_IN, &(addr->spindle_orient_fault), 0, "spindle.%d.orient-fault", num));
 
-    if ((retval = hal_pin_float_newf(HAL_IN, &(addr->spindle_revs), mot_comp_id, "spindle.%d.revs", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_IN, &(addr->spindle_speed_in), mot_comp_id, "spindle.%d.speed-in", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_IN, &(addr->spindle_is_atspeed), mot_comp_id, "spindle.%d.at-speed", num)) != 0) return retval;
-    *(addr->spindle_is_atspeed) = 1;
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_IN, &(addr->spindle_revs), 0.0, "spindle.%d.revs", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_IN, &(addr->spindle_speed_in), 0.0, "spindle.%d.speed-in", num));
+    /* Default 1: an unwired at-speed pin must never block motion. Do not
+       change to 0 or machines without at-speed wired would idle forever. */
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(addr->spindle_is_atspeed), 1, "spindle.%d.at-speed", num));
     /* restore saved message level */
     rtapi_set_msg_level(msg);
     return 0;
@@ -605,57 +742,56 @@ static int export_spindle(int num, spindle_hal_t * addr){
 
 static int export_joint(int num, joint_hal_t * addr)
 {
-    int retval, msg;
-
     /* This function exports a lot of stuff, which results in a lot of
        logging if msg_level is at INFO or ALL. So we save the current value
        of msg_level and restore it later.  If you actually need to log this
        function's actions, change the second line below */
-    msg = rtapi_get_msg_level();
+    int msg = rtapi_get_msg_level();
     rtapi_set_msg_level(RTAPI_MSG_WARN);
 
     /* export joint pins */
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->coarse_pos_cmd), mot_comp_id, "joint.%d.coarse-pos-cmd", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->joint_pos_cmd), mot_comp_id, "joint.%d.pos-cmd", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->joint_pos_fb), mot_comp_id, "joint.%d.pos-fb", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->motor_pos_cmd), mot_comp_id, "joint.%d.motor-pos-cmd", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_IN, &(addr->motor_pos_fb), mot_comp_id, "joint.%d.motor-pos-fb", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->motor_offset), mot_comp_id, "joint.%d.motor-offset", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_IN, &(addr->pos_lim_sw), mot_comp_id, "joint.%d.pos-lim-sw-in", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_IN, &(addr->neg_lim_sw), mot_comp_id, "joint.%d.neg-lim-sw-in", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->amp_enable), mot_comp_id, "joint.%d.amp-enable-out", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_IN, &(addr->amp_fault), mot_comp_id, "joint.%d.amp-fault-in", num)) != 0) return retval;
-    if ((retval = hal_pin_s32_newf(HAL_IN,   &(addr->jjog_counts), mot_comp_id, "joint.%d.jog-counts", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_IN,   &(addr->jjog_enable), mot_comp_id, "joint.%d.jog-enable", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_IN, &(addr->jjog_scale), mot_comp_id, "joint.%d.jog-scale", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_IN,   &(addr->jjog_vel_mode), mot_comp_id, "joint.%d.jog-vel-mode", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->joint_vel_cmd), mot_comp_id, "joint.%d.vel-cmd", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->joint_acc_cmd), mot_comp_id, "joint.%d.acc-cmd", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->backlash_corr), mot_comp_id, "joint.%d.backlash-corr", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->backlash_filt), mot_comp_id, "joint.%d.backlash-filt", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->backlash_vel), mot_comp_id, "joint.%d.backlash-vel", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->f_error), mot_comp_id, "joint.%d.f-error", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->f_error_lim), mot_comp_id, "joint.%d.f-error-lim", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->free_pos_cmd), mot_comp_id, "joint.%d.free-pos-cmd", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_OUT, &(addr->free_vel_lim), mot_comp_id, "joint.%d.free-vel-lim", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->free_tp_enable), mot_comp_id, "joint.%d.free-tp-enable", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->kb_jjog_active), mot_comp_id, "joint.%d.kb-jog-active", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->wheel_jjog_active), mot_comp_id, "joint.%d.wheel-jog-active", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->in_position), mot_comp_id, "joint.%d.in-position", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->phl), mot_comp_id, "joint.%d.pos-hard-limit", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->nhl), mot_comp_id, "joint.%d.neg-hard-limit", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->active), mot_comp_id, "joint.%d.active", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->error), mot_comp_id, "joint.%d.error", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->f_errored), mot_comp_id, "joint.%d.f-errored", num)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->faulted), mot_comp_id, "joint.%d.faulted", num)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_IN,&(addr->jjog_accel_fraction),mot_comp_id,"joint.%d.jog-accel-fraction", num)) != 0) return retval;
-    *addr->jjog_accel_fraction = 1.0; // fraction of accel for wheel jjogs
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->coarse_pos_cmd), 0.0, "joint.%d.coarse-pos-cmd", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->joint_pos_cmd), 0.0, "joint.%d.pos-cmd", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->joint_pos_fb), 0.0, "joint.%d.pos-fb", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->motor_pos_cmd), 0.0, "joint.%d.motor-pos-cmd", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_IN, &(addr->motor_pos_fb), 0.0, "joint.%d.motor-pos-fb", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->motor_offset), 0.0, "joint.%d.motor-offset", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(addr->pos_lim_sw), 0, "joint.%d.pos-lim-sw-in", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(addr->neg_lim_sw), 0, "joint.%d.neg-lim-sw-in", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(addr->amp_enable), 0, "joint.%d.amp-enable-out", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(addr->amp_fault), 0, "joint.%d.amp-fault-in", num));
+    CALL_CHECK(hal_pin_new_si32(mot_comp_id, HAL_IN, &(addr->jjog_counts), 0, "joint.%d.jog-counts", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN,   &(addr->jjog_enable), 0, "joint.%d.jog-enable", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_IN, &(addr->jjog_scale), 0.0, "joint.%d.jog-scale", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN,   &(addr->jjog_vel_mode), 0, "joint.%d.jog-vel-mode", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->joint_vel_cmd), 0.0, "joint.%d.vel-cmd", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->joint_acc_cmd), 0.0, "joint.%d.acc-cmd", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->joint_jerk_cmd), 0.0, "joint.%d.jerk-cmd", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->backlash_corr), 0.0, "joint.%d.backlash-corr", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->backlash_filt), 0.0, "joint.%d.backlash-filt", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->backlash_vel), 0.0, "joint.%d.backlash-vel", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->f_error), 0.0, "joint.%d.f-error", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->f_error_lim), 0.0, "joint.%d.f-error-lim", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->free_pos_cmd), 0.0, "joint.%d.free-pos-cmd", num));
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_OUT, &(addr->free_vel_lim), 0.0, "joint.%d.free-vel-lim", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(addr->free_tp_enable), 0, "joint.%d.free-tp-enable", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(addr->kb_jjog_active), 0, "joint.%d.kb-jog-active", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(addr->wheel_jjog_active), 0, "joint.%d.wheel-jog-active", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(addr->in_position), 0, "joint.%d.in-position", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(addr->phl), 0, "joint.%d.pos-hard-limit", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(addr->nhl), 0, "joint.%d.neg-hard-limit", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(addr->active), 0, "joint.%d.active", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(addr->error), 0, "joint.%d.error", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(addr->f_errored), 0, "joint.%d.f-errored", num));
+    CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(addr->faulted), 0, "joint.%d.faulted", num));
+    // init 1.0: fraction of accel for wheel jjogs
+    CALL_CHECK(hal_pin_new_real(mot_comp_id, HAL_IN, &(addr->jjog_accel_fraction), 1.0, "joint.%d.jog-accel-fraction", num));
 
     if ( joint_is_lockable(num) ) {
         // these pins may be needed for rotary joints
         rtapi_print_msg(RTAPI_MSG_WARN,"motion.c: Creating unlock hal pins for joint %d\n",num);
-        if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->unlock), mot_comp_id, "joint.%d.unlock", num)) != 0) return retval;
-        if ((retval = hal_pin_bit_newf(HAL_IN, &(addr->is_unlocked), mot_comp_id, "joint.%d.is-unlocked", num)) != 0) return retval;
+        CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_OUT, &(addr->unlock), 0, "joint.%d.unlock", num));
+        CALL_CHECK(hal_pin_new_bool(mot_comp_id, HAL_IN, &(addr->is_unlocked), 0, "joint.%d.is-unlocked", num));
     }
 
     /* restore saved message level */
@@ -667,28 +803,8 @@ static int export_extrajoint(int num, extrajoint_hal_t * addr)
 {
     int retval;
     /* export extrajoint pins */
-    if ((retval = hal_pin_float_newf(HAL_IN,  &(addr->posthome_cmd),  mot_comp_id,
+    if ((retval = hal_pin_new_real(mot_comp_id, HAL_IN,  &(addr->posthome_cmd), 0.0,
                                             "joint.%d.posthome-cmd",  num)) != 0) return retval;
-    return 0;
-}
-
-static int export_axis(char c, axis_hal_t * addr)
-{
-    int retval, msg;
-    msg = rtapi_get_msg_level();
-    rtapi_set_msg_level(RTAPI_MSG_WARN);
-
-    if ((retval = hal_pin_bit_newf(HAL_IN,  &(addr->ajog_enable),      mot_comp_id,"axis.%c.jog-enable", c)) != 0) return retval;
-    if ((retval = hal_pin_float_newf(HAL_IN,&(addr->ajog_scale),       mot_comp_id,"axis.%c.jog-scale", c)) != 0) return retval;
-    if ((retval = hal_pin_s32_newf(HAL_IN,  &(addr->ajog_counts),      mot_comp_id,"axis.%c.jog-counts", c)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_IN,  &(addr->ajog_vel_mode),    mot_comp_id,"axis.%c.jog-vel-mode", c)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->kb_ajog_active),   mot_comp_id,"axis.%c.kb-jog-active", c)) != 0) return retval;
-    if ((retval = hal_pin_bit_newf(HAL_OUT, &(addr->wheel_ajog_active),mot_comp_id,"axis.%c.wheel-jog-active", c)) != 0) return retval;
-
-    if ((retval = hal_pin_float_newf(HAL_IN,&(addr->ajog_accel_fraction),       mot_comp_id,"axis.%c.jog-accel-fraction", c)) != 0) return retval;
-    *addr->ajog_accel_fraction = 1.0; // fraction of accel for wheel ajogs
-
-    rtapi_set_msg_level(msg);
     return 0;
 }
 
@@ -698,14 +814,14 @@ static int export_axis(char c, axis_hal_t * addr)
 */
 static int init_comm_buffers(void)
 {
-    int joint_num, axis_num, spindle_num, n;
+    int joint_num, spindle_num, n;
     emcmot_joint_t *joint;
     int retval;
 
     rtapi_print_msg(RTAPI_MSG_INFO, "MOTION: init_comm_buffers() starting...\n");
 
     emcmotStruct = 0;
-    emcmotDebug = 0;
+    emcmotInternal = 0;
     emcmotStatus = 0;
     emcmotCommand = 0;
     emcmotConfig = 0;
@@ -724,24 +840,26 @@ static int init_comm_buffers(void)
 	return -1;
     }
 
-    /* zero shared memory before doing anything else. */
-    memset(emcmotStruct, 0, sizeof(emcmot_struct_t));
-
     /* we'll reference emcmotStruct directly */
     emcmotCommand = &emcmotStruct->command;
     emcmotStatus = &emcmotStruct->status;
     emcmotConfig = &emcmotStruct->config;
-    emcmotDebug = &emcmotStruct->debug;
+    emcmotInternal = &emcmotStruct->internal;
     emcmotError = &emcmotStruct->error;
 
     /* init error struct */
     emcmotErrorInit(emcmotError);
 
-    /* init command struct */
-    emcmotCommand->head = 0;
-    emcmotCommand->command = 0;
-    emcmotCommand->commandNum = 0;
-    emcmotCommand->tail = 0;
+    /*
+     * DO NOT init the command struct!
+     * This is a reader process and the writer (f.ex. milltask) may already
+     * have written a command in there before we get attached to shared memory.
+     * We might (actually will) lose a command if we write to the command
+     * structure.
+     *
+     * emcmotCommand->command = 0;
+     * emcmotCommand->commandNum = 0;
+     */
 
     /* init status struct */
     emcmotStatus->head = 0;
@@ -750,23 +868,24 @@ static int init_comm_buffers(void)
     emcmotStatus->commandStatus = 0;
 
     /* init more stuff */
-    emcmotDebug->head = 0;
+    emcmotInternal->head = 0;
     emcmotConfig->head = 0;
 
     emcmotStatus->motionFlag = 0;
     SET_MOTION_ERROR_FLAG(0);
     SET_MOTION_COORD_FLAG(0);
     SET_MOTION_TELEOP_FLAG(0);
-    emcmotDebug->split = 0;
+    emcmotInternal->split = 0;
     emcmotStatus->heartbeat = 0;
 
-    ALL_JOINTS                 = num_joints;      // emcmotConfig->numJoints from [KINS]JOINTS
+    ALL_JOINTS                   = num_joints;      // emcmotConfig->numJoints from [KINS]JOINTS
     emcmotConfig->numExtraJoints = num_extrajoints; // from motmod num_extrajoints=
     emcmotStatus->numExtraJoints = num_extrajoints;
 
     emcmotConfig->numSpindles = num_spindles;
     emcmotConfig->numDIO = num_dio;
     emcmotConfig->numAIO = num_aio;
+    emcmotConfig->numMiscError = num_misc_error;
 
     ZERO_EMC_POSE(emcmotStatus->carte_pos_cmd);
     ZERO_EMC_POSE(emcmotStatus->carte_pos_fb);
@@ -776,7 +895,7 @@ static int init_comm_buffers(void)
     emcmotStatus->feed_scale = 1.0;
     emcmotStatus->rapid_scale = 1.0;
     emcmotStatus->net_feed_scale = 1.0;
-    /* adaptive feed is off by default, feed override, spindle 
+    /* adaptive feed is off by default, feed override, spindle
        override, and feed hold are on */
     emcmotStatus->enables_new = FS_ENABLED | SS_ENABLED | FH_ENABLED;
     emcmotStatus->enables_queued = emcmotStatus->enables_new;
@@ -791,25 +910,13 @@ static int init_comm_buffers(void)
     emcmotConfig->kinType = kinematicsType();
     emcmot_config_change();
 
-    /* init pointer to joint structs */
-#ifdef STRUCTS_IN_SHMEM
-    joints = &(emcmotDebug->joints[0]);
-    axes = &(emcmotDebug->axes[0]);
-#else
-    joints = &(joint_array[0]);
-    axes = &(axis_array[0]);
-#endif
-
     for (spindle_num = 0; spindle_num < EMCMOT_MAX_SPINDLES; spindle_num++){
         emcmotStatus->spindle_status[spindle_num].scale = 1.0;
         emcmotStatus->spindle_status[spindle_num].speed = 0.0;
     }
 
-   for (axis_num = 0; axis_num < EMCMOT_MAX_AXIS; axis_num++) {
-      emcmot_axis_t *axis;
-      axis = &axes[axis_num];
-      axis->locking_joint = -1;
-   }
+    axis_init_all();
+
     /* init per-joint stuff */
     for (joint_num = 0; joint_num < ALL_JOINTS; joint_num++) {
 	/* point to structure for this joint */
@@ -821,6 +928,7 @@ static int init_comm_buffers(void)
 	joint->min_pos_limit = -1.0;
 	joint->vel_limit = 1.0;
 	joint->acc_limit = 1.0;
+    joint->jerk_limit = 1.0;
 	joint->min_ferror = 0.01;
 	joint->max_ferror = 1.0;
 	joint->backlash = 0.0;
@@ -865,27 +973,6 @@ static int init_comm_buffers(void)
 	/* init internal info */
 	cubicInit(&(joint->cubic));
     }
-
-	homing_init();  // for all joints
-
-    /*! \todo FIXME-- add emcmotError */
-
-    emcmotDebug->cur_time = emcmotDebug->last_time = 0.0;
-    emcmotDebug->start_time = etime();
-    emcmotDebug->running_time = 0.0;
-
-    /* init motion emcmotDebug->coord_tp */
-    if (-1 == tpCreate(&emcmotDebug->coord_tp, DEFAULT_TC_QUEUE_SIZE,
-	    emcmotDebug->queueTcSpace)) {
-	rtapi_print_msg(RTAPI_MSG_ERR,
-	    "MOTION: failed to create motion emcmotDebug->coord_tp\n");
-	return -1;
-    }
-//    tpInit(&emcmotDebug->coord_tp); // tpInit called from tpCreate
-    tpSetCycleTime(&emcmotDebug->coord_tp, emcmotConfig->trajCycleTime);
-    tpSetPos(&emcmotDebug->coord_tp, &emcmotStatus->carte_pos_cmd);
-    tpSetVmax(&emcmotDebug->coord_tp, emcmotStatus->vel, emcmotStatus->vel);
-    tpSetAmax(&emcmotDebug->coord_tp, emcmotStatus->acc);
 
     emcmotStatus->tail = 0;
 
@@ -943,14 +1030,14 @@ static int init_threads(void)
 	return -1;
     }
     /* export realtime functions that do the real work */
-    retval = hal_export_funct("motion-controller", emcmotController, 0	/* arg 
+    retval = hal_export_funct("motion-controller", emcmotController, 0	/* arg
 	 */ , 1 /* uses_fp */ , 0 /* reentrant */ , mot_comp_id);
     if (retval < 0) {
 	rtapi_print_msg(RTAPI_MSG_ERR,
 	    "MOTION: failed to export controller function\n");
 	return -1;
     }
-    retval = hal_export_funct("motion-command-handler", emcmotCommandHandler, 0	/* arg 
+    retval = hal_export_funct("motion-command-handler", emcmotCommandHandler, 0	/* arg
 	 */ , 1 /* uses_fp */ , 0 /* reentrant */ , mot_comp_id);
     if (retval < 0) {
 	rtapi_print_msg(RTAPI_MSG_ERR,
@@ -961,7 +1048,7 @@ static int init_threads(void)
 #if 0
     /*! \todo FIXME - currently the traj planner is called from the controller */
     /* eventually it will be a separate function */
-    retval = hal_export_funct("motion-traj-planner", emcmotTrajPlanner, 0	/* arg 
+    retval = hal_export_funct("motion-traj-planner", emcmotTrajPlanner, 0	/* arg
 	 */ , 1 /* uses_fp */ ,
 	0 /* reentrant */ , mot_comp_id);
     if (retval < 0) {
@@ -1012,7 +1099,7 @@ static int setTrajCycleTime(double secs)
         emcmotConfig->interpolationRate = 1;
 
     /* set traj planner */
-    tpSetCycleTime(&emcmotDebug->coord_tp, secs);
+    tpSetCycleTime(&emcmotInternal->coord_tp, secs);
 
     /* set the free planners, cubic interpolation rate and segment time */
     for (t = 0; t < ALL_JOINTS; t++) {

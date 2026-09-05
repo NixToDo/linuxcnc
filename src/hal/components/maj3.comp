@@ -1,4 +1,4 @@
-//   This is a 'majority-of-3' component for EMC2 HAL
+//   This is a 'majority-of-3' component for LinuxCNC HAL
 //   Copyright 2006 Jeff Epler <jepler@unpythonic.net>
 //
 //   This program is free software; you can redistribute it and/or modify
@@ -17,16 +17,18 @@
 
 component maj3 "Compute the majority of 3 inputs";
 
-pin in bit in1;
-pin in bit in2;
-pin in bit in3;
-pin out bit out;
+pin in bool in1;
+pin in bool in2;
+pin in bool in3;
+pin out bool out;
 
-param rw bit invert;
+param rw bool invert;
 
-function _ nofp;
+option period no;
+function _;
 
 license "GPL";
+author "Jeff Epler";
 ;;
 
 MODULE_AUTHOR("Jeff Epler");
@@ -38,7 +40,7 @@ FUNCTION(_) {
     if (in2) sum++;
     if (in3) sum++;
     if(invert)
-        out = sum < 2;
+        out_set(sum < 2);
     else
-        out = sum >= 2;
+        out_set(sum >= 2);
 }

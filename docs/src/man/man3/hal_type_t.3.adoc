@@ -1,0 +1,44 @@
+:manvolnum: 3
+
+= hal_type_t(3)
+
+== NAME
+
+hal_type_t, hal_bool_t, hal_real_t, hal_sint_t, hal_uint_t, hal_port_t - typedefs for HAL data types
+
+== DESCRIPTION
+
+typedef ... *hal_bool_t*;::
+  An opaque type reference for a boolean with a value of zero/false (0) or one/true (1).
+typedef ... *hal_real_t*;::
+  An opaque type reference for a floating-point value with the same precision as a C double type.
+typedef ... *hal_sint_t*;::
+  An opaque type reference for a value from -2^63^ ... +2^63^-1.
+typedef ... *hal_uint_t*;::
+  An opaque type reference for a value from 0 ... +2^64^-1.
+typedef ... *hal_port_t*;::
+  An opaque type reference as a handle to a port object. Used with hal_port*() functions.
+typedef enum *hal_type_t*;::
+  *HAL_BOOL*;;
+    Corresponds to the type *hal_bool_t*.
+  *HAL_REAL*;;
+    Corresponds to the type *hal_real_t*.
+  *HAL_SINT*;;
+    Corresponds to the type *hal_sint_t*.
+  *HAL_UINT*;;
+    Corresponds to the type *hal_uint_t*.
+  *HAL_PORT*;;
+    Corresponds to the type *hal_port_t*.
+
+== NOTES
+
+HAL types cannot be read or written directly.
+They are opaque structures that reference a value of the type indicated by the name.
+Reading and writing HAL types is done with getters and setters.
+There are 32-bit compatibility getters and setters to handle smaller coding types.
+
+== SEE ALSO
+
+hal_pin_new(3), hal_param_new(3),
+hal_query_t(3),
+hal_setter(3), hal_getter(3)

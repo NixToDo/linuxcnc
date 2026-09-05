@@ -19,6 +19,9 @@
 /* Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA. */
 
 
+#ifndef CLASSICLADDER_SEQUENTIAL_H
+#define CLASSICLADDER_SEQUENTIAL_H
+
 #define NBR_SEQUENTIAL_PAGES 5
 
 #define NBR_STEPS 128
@@ -77,7 +80,7 @@ typedef struct StrTransition
 	/* number of the steps to activate if condition true
 	   >1 if start of 'AND' */
 	short int NumStepToActiv[ NBR_SWITCHS_MAX ];
-	/* number of the steps to desactivate if condition true
+	/* number of the steps to deactivate if condition true
 	   >1 if end of 'AND' */
 	short int NumStepToDesactiv[ NBR_SWITCHS_MAX ];
 	/* if start of 'OR' */
@@ -117,3 +120,5 @@ typedef struct StrSequential
 }StrSequential;
 
 
+
+#endif

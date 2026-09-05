@@ -9,10 +9,10 @@
 ********************************************************************/
 
 
-#include "rtapi.h"
-#include "rtapi_app.h"
+#include <rtapi.h>
+#include <rtapi_app.h>
 
-#include "hal.h"
+#include <hal.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -34,12 +34,12 @@ MODULE_LICENSE("GPL");
 #define PINS_PER_HEADER  46
 
 typedef struct {
-    hal_bit_t* led_pins[4];
-    hal_bit_t* input_pins[1 + PINS_PER_HEADER * HEADERS]; // array of pointers to bivts
-    hal_bit_t* output_pins[1 + PINS_PER_HEADER * HEADERS]; // array of pointers to bits
-    hal_bit_t  *led_inv[4];
-    hal_bit_t  *input_inv[1 + PINS_PER_HEADER * HEADERS];
-    hal_bit_t  *output_inv[1 + PINS_PER_HEADER * HEADERS];
+    hal_bool_t led_pins[4];
+    hal_bool_t input_pins[1 + PINS_PER_HEADER * HEADERS]; // array of pointers to bivts
+    hal_bool_t output_pins[1 + PINS_PER_HEADER * HEADERS]; // array of pointers to bits
+    hal_bool_t led_inv[4];
+    hal_bool_t input_inv[1 + PINS_PER_HEADER * HEADERS];
+    hal_bool_t output_inv[1 + PINS_PER_HEADER * HEADERS];
 } port_data_t;
 
 static port_data_t *port_data;
@@ -96,7 +96,7 @@ int configure_gpio_port(int n) {
 	    return -errno;
 	}
 	// point at CM_PER_GPIOn_CLKCTRL register for port n
-	regptr = cm_per + CM_PER_GPIO1_CLKCTRL_OFFSET + 4*(n-1);
+	regptr = (void *)((char *)cm_per + CM_PER_GPIO1_CLKCTRL_OFFSET + 4*(n-1));
 	regvalue = *regptr;
 	// check for port enabled
 	if ( (regvalue & CM_PER_GPIO_CLKCTRL_MODMODE_MASK ) != CM_PER_GPIO_CLKCTRL_MODMODE_ENABLED ) {
@@ -113,10 +113,10 @@ int configure_gpio_port(int n) {
         return -errno;
     }
 
-    gpio_ports[n]->oe_reg = gpio_ports[n]->gpio_addr + GPIO_OE;
-    gpio_ports[n]->setdataout_reg = gpio_ports[n]->gpio_addr + GPIO_SETDATAOUT;
-    gpio_ports[n]->clrdataout_reg = gpio_ports[n]->gpio_addr + GPIO_CLEARDATAOUT;
-    gpio_ports[n]->datain_reg = gpio_ports[n]->gpio_addr + GPIO_DATAIN;
+    gpio_ports[n]->oe_reg = (void *)((char *)gpio_ports[n]->gpio_addr + GPIO_OE);
+    gpio_ports[n]->setdataout_reg = (void *)((char *)gpio_ports[n]->gpio_addr + GPIO_SETDATAOUT);
+    gpio_ports[n]->clrdataout_reg = (void *)((char *)gpio_ports[n]->gpio_addr + GPIO_CLEARDATAOUT);
+    gpio_ports[n]->datain_reg = (void *)((char *)gpio_ports[n]->gpio_addr + GPIO_DATAIN);
 
 
     rtapi_print("memmapped gpio port %d to %p, oe: %p, set: %p, clr: %p\n", n, gpio_ports[n]->gpio_addr, gpio_ports[n]->oe_reg, gpio_ports[n]->setdataout_reg, gpio_ports[n]->clrdataout_reg);
@@ -126,7 +126,6 @@ int configure_gpio_port(int n) {
 }
 
 int rtapi_app_main(void) {
-    char name[HAL_NAME_LEN + 1];
     int n, retval;
     char *data, *token;
 
@@ -170,7 +169,7 @@ int rtapi_app_main(void) {
             }
 
             // Add HAL pin
-            retval = hal_pin_bit_newf(HAL_IN, &(port_data->led_pins[led]), comp_id, "bb_gpio.userled%d", led);
+            retval = hal_pin_new_bool(comp_id, HAL_IN, &(port_data->led_pins[led]), 0, "bb_gpio.userled%d", led);
 
             if(retval < 0) {
                 rtapi_print_msg(RTAPI_MSG_ERR, "%s: ERROR: userled %d could not export pin, err: %d\n", modname, led, retval);
@@ -179,16 +178,13 @@ int rtapi_app_main(void) {
             }
 
             // Add HAL pin
-            retval = hal_pin_bit_newf(HAL_IN, &(port_data->led_inv[led]), comp_id, "bb_gpio.userled%d-invert", led);
+            retval = hal_pin_new_bool(comp_id, HAL_IN, &(port_data->led_inv[led]), 0, "bb_gpio.userled%d-invert", led);
 
             if(retval < 0) {
                 rtapi_print_msg(RTAPI_MSG_ERR, "%s: ERROR: userled %d could not export pin, err: %d\n", modname, led, retval);
                 hal_exit(comp_id);
                 return -1;
             }
-
-            // Initialize HAL pin
-            *(port_data->led_inv[led]) = 0;
 
             int gpio_num = user_led_gpio_pins[led].port_num;
             // configure gpio port if necessary
@@ -219,20 +215,18 @@ int rtapi_app_main(void) {
             if (pin < 300)
                 pin += 700;
 
-            if(pin < 801 || pin > 946 || (pin > 846 && pin < 901)) {
-                rtapi_print_msg(RTAPI_MSG_ERR, "%s: ERROR: invalid pin number '%d'.  Valid pins are 801-846 for P8 pins, 901-946 for P9 pins.\n", modname, pin);
-                hal_exit(comp_id);
-                return -1;
-            }
-
-            if(pin < 900) {
+            if(pin >= 801 && pin <= 846) {
                 pin -= 800;
                 bbpin = &p8_pins[pin];
                 header = 8;
-            } else {
+            } else if(pin >= 901 && pin <= 946) {
                 pin -= 900;
                 bbpin = &p9_pins[pin];
                 header = 9;
+            } else {
+                rtapi_print_msg(RTAPI_MSG_ERR, "%s: ERROR: invalid pin number '%d'.  Valid pins are 801-846 for P8 pins, 901-946 for P9 pins.\n", modname, pin);
+                hal_exit(comp_id);
+                return -1;
             }
 
             if(bbpin->claimed != 0) {
@@ -244,7 +238,7 @@ int rtapi_app_main(void) {
             data = NULL; // after the first call, subsequent calls to strtok need to be on NULL
 
             // Add HAL pin
-            retval = hal_pin_bit_newf(HAL_OUT, &(port_data->input_pins[pin + (header - 8)*PINS_PER_HEADER]), comp_id, "bb_gpio.p%d.in-%02d", header, pin);
+            retval = hal_pin_new_bool(comp_id, HAL_OUT, &(port_data->input_pins[pin + (header - 8)*PINS_PER_HEADER]), 0, "bb_gpio.p%d.in-%02d", header, pin);
 
             if(retval < 0) {
                 rtapi_print_msg(RTAPI_MSG_ERR, "%s: ERROR: pin p%d.%02d could not export pin, err: %d\n", modname, header, pin, retval);
@@ -253,16 +247,13 @@ int rtapi_app_main(void) {
             }
 
             // Add HAL pin
-            retval = hal_pin_bit_newf(HAL_IN, &(port_data->input_inv[pin + (header - 8)*PINS_PER_HEADER]), comp_id, "bb_gpio.p%d.in-%02d-invert", header, pin);
+            retval = hal_pin_new_bool(comp_id, HAL_IN, &(port_data->input_inv[pin + (header - 8)*PINS_PER_HEADER]), 0, "bb_gpio.p%d.in-%02d-invert", header, pin);
 
             if(retval < 0) {
                 rtapi_print_msg(RTAPI_MSG_ERR, "%s: ERROR: pin p%d.%02d could not export pin, err: %d\n", modname, header, pin, retval);
                 hal_exit(comp_id);
                 return -1;
             }
-
-            // Initialize HAL pin
-            *(port_data->input_inv[pin + (header - 8)*PINS_PER_HEADER]) = 0;
 
             int gpio_num = bbpin->port_num;
 
@@ -295,20 +286,18 @@ int rtapi_app_main(void) {
             if (pin < 300)
                 pin += 700;
 
-            if(pin < 801 || pin > 946 || (pin > 846 && pin < 901)) {
-                rtapi_print_msg(RTAPI_MSG_ERR, "%s: ERROR: invalid pin number '%d'.  Valid pins are 801-846 for P8 pins, 901-946 for P9 pins.\n", modname, pin);
-                hal_exit(comp_id);
-                return -1;
-            }
-
-            if(pin < 900) {
+            if(pin >= 801 && pin <= 846) {
                 pin -= 800;
                 bbpin = &p8_pins[pin];
                 header = 8;
-            } else {
+            } else if(pin >= 901 && pin <= 946) {
                 pin -= 900;
                 bbpin = &p9_pins[pin];
                 header = 9;
+            } else {
+                rtapi_print_msg(RTAPI_MSG_ERR, "%s: ERROR: invalid pin number '%d'.  Valid pins are 801-846 for P8 pins, 901-946 for P9 pins.\n", modname, pin);
+                hal_exit(comp_id);
+                return -1;
             }
 
             if(bbpin->claimed != 0) {
@@ -320,7 +309,7 @@ int rtapi_app_main(void) {
             data = NULL; // after the first call, subsequent calls to strtok need to be on NULL
 
             // Add HAL pin
-            retval = hal_pin_bit_newf(HAL_IN, &(port_data->output_pins[pin + (header - 8)*PINS_PER_HEADER]), comp_id, "bb_gpio.p%d.out-%02d", header, pin);
+            retval = hal_pin_new_bool(comp_id, HAL_IN, &(port_data->output_pins[pin + (header - 8)*PINS_PER_HEADER]), 0, "bb_gpio.p%d.out-%02d", header, pin);
 
             if(retval < 0) {
                 rtapi_print_msg(RTAPI_MSG_ERR, "%s: ERROR: pin p%d.%02d could not export pin, err: %d\n", modname, header, pin, retval);
@@ -329,16 +318,13 @@ int rtapi_app_main(void) {
             }
 
             // Add HAL pin
-            retval = hal_pin_bit_newf(HAL_IN, &(port_data->output_inv[pin + (header - 8)*PINS_PER_HEADER]), comp_id, "bb_gpio.p%d.out-%02d-invert", header, pin);
+            retval = hal_pin_new_bool(comp_id, HAL_IN, &(port_data->output_inv[pin + (header - 8)*PINS_PER_HEADER]), 0, "bb_gpio.p%d.out-%02d-invert", header, pin);
 
             if(retval < 0) {
                 rtapi_print_msg(RTAPI_MSG_ERR, "%s: ERROR: pin p%d.%02d could not export pin, err: %d\n", modname, header, pin, retval);
                 hal_exit(comp_id);
                 return -1;
             }
-
-            // Initialize HAL pin
-            *(port_data->output_inv[pin + (header - 8)*PINS_PER_HEADER]) = 0;
 
             int gpio_num = bbpin->port_num;
 
@@ -359,16 +345,14 @@ int rtapi_app_main(void) {
 
 
     // export functions
-    rtapi_snprintf(name, sizeof(name), "bb_gpio.write");
-    retval = hal_export_funct(name, write_port, port_data, 0, 0, comp_id);
+    retval = hal_export_funct("bb_gpio.write", write_port, port_data, 0, 0, comp_id);
     if(retval < 0) {
         rtapi_print_msg(RTAPI_MSG_ERR, "%s: ERROR: port %d write funct export failed\n", modname, n);
         hal_exit(comp_id);
         return -1;
     }
 
-    rtapi_snprintf(name, sizeof(name), "bb_gpio.read");
-    retval = hal_export_funct(name, read_port, port_data, 0, 0, comp_id);
+    retval = hal_export_funct("bb_gpio.read", read_port, port_data, 0, 0, comp_id);
     if(retval < 0) {
         rtapi_print_msg(RTAPI_MSG_ERR, "%s: ERROR: port %d read funct export failed\n", modname, n);
         hal_exit(comp_id);
@@ -388,6 +372,7 @@ void rtapi_app_exit(void) {
 }
 
 static void write_port(void *arg, long period) {
+    (void)period;
     int i;
     port_data_t *port = (port_data_t *)arg;
 
@@ -399,7 +384,7 @@ static void write_port(void *arg, long period) {
 
         if(pin.claimed != 'O') continue; // if we somehow get here but the pin isn't claimed as output, short circuit
 
-        if((*port->led_pins[i] ^ *(port->led_inv[i])) == 0)
+        if((hal_get_bool(port->led_pins[i]) ^ hal_get_bool(port->led_inv[i])) == 0)
             *(pin.port->clrdataout_reg) = (1 << pin.pin_num);
         else
             *(pin.port->setdataout_reg) = (1 << pin.pin_num);
@@ -418,7 +403,7 @@ static void write_port(void *arg, long period) {
 
         if(pin.claimed != 'O') continue; // if we somehow get here but the pin isn't claimed as output, short circuit
 
-        if((*port->output_pins[i] ^ *(port->output_inv[i])) == 0)
+        if((hal_get_bool(port->output_pins[i]) ^ hal_get_bool(port->output_inv[i])) == 0)
             *(pin.port->clrdataout_reg) = (1 << pin.pin_num);
         else
             *(pin.port->setdataout_reg) = (1 << pin.pin_num);
@@ -427,6 +412,7 @@ static void write_port(void *arg, long period) {
 
 
 static void read_port(void *arg, long period) {
+    (void)period;
     int i;
     port_data_t *port = (port_data_t *)arg;
 
@@ -445,7 +431,7 @@ static void read_port(void *arg, long period) {
 
         if(!(pin.claimed == 'I' || pin.claimed == 'U' || pin.claimed == 'D')) continue; // if we get here but the pin isn't claimed as input, short circuit
 
-        *port->input_pins[i] = ((*(pin.port->datain_reg) & (1 << pin.pin_num))  >> pin.pin_num) ^ *(port->input_inv[i]);
+        hal_set_bool(port->input_pins[i], ((*(pin.port->datain_reg) & (1 << pin.pin_num))  >> pin.pin_num) ^ hal_get_bool(port->input_inv[i]));
     }
 }
 
@@ -473,7 +459,7 @@ off_t start_addr_for_port(int port) {
 
 
 void configure_pin(bb_gpio_pin *pin, char mode) {
-    volatile unsigned int *control_reg = control_module + pin->control_offset;
+    volatile unsigned int *control_reg = (void *)((char *)control_module + pin->control_offset);
     pin->claimed = mode;
     switch(mode) {
         case 'O':

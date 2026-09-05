@@ -32,25 +32,23 @@
 
 #include <getopt.h>
 
-#include "rcs.hh"
-#include "posemath.h"		// PM_POSE, TO_RAD
-#include "emc.hh"		// EMC NML
-#include "canon.hh"		// CANON_UNITS, CANON_UNITS_INCHES,MM,CM
-#include "emcglb.h"		// EMC_NMLFILE, TRAJ_MAX_VELOCITY, etc.
-#include "emccfg.h"		// DEFAULT_TRAJ_MAX_VELOCITY
-#include "inifile.hh"		// INIFILE
-#include "rcs_print.hh"
-#include "timer.hh"             // etime()
+#include "libnml/rcs/rcs.hh"
+#include <posemath.h>		// PM_POSE, TO_RAD
+#include "nml_intf/emc.hh"		// EMC NML
+#include "nml_intf/canon.hh"		// CANON_UNITS, CANON_UNITS_INCHES,MM,CM
+#include "nml_intf/emcglb.h"		// EMC_NMLFILE, TRAJ_MAX_VELOCITY, etc.
+#include "nml_intf/emccfg.h"		// DEFAULT_TRAJ_MAX_VELOCITY
+#include "libnml/rcs/rcs_print.hh"
+#include "libnml/os_intf/timer.hh"             // etime()
 #include "shcom.hh"             // NML Messaging functions
 #include "emcsched.hh"
-#include <rtapi_string.h>
 
 /*
   Using schedrmt:
 
   schedrmt {-- --port <port number> --name <server name> --connectpw <password>
              --enablepw <password> --sessions <max sessions> --path <path>
-             -ini<inifile>}
+             -ini <INI file>}
 
   With -- --port Waits for socket connections (Telnet) on specified socket, without port
             uses default port 5007.
@@ -61,7 +59,7 @@
             to max sessions. Default is no limit (-1).
   With -- --path Sets the base path to program (G-Code) files, default is "../../nc_files/".
             Make sure to include the final slash (/).
-  With -- -ini <inifile>, uses inifile instead of emc.ini. 
+  With -- -ini <INI file>, uses specified INI file instead of default emc.ini. 
 
   There are six commands supported, Where the commands set and get contain EMC
   specific sub-commands based on the commands supported by emcsh, but where the "emc_"
@@ -110,7 +108,7 @@
   connection. If no parameters are specified, it will itemize the available commands.
   If a command is specified, it will provide usage information for the specified
   command. Help will respond regardless of whether a "Hello" has been
-  successsfully negotiated.
+  successfully negotiated.
   
   
   EMC sub-commands:
@@ -147,7 +145,7 @@
   supported by the server implementation.
 
   INIFILE
-  Returns the path and file name of the current configuration inifile.
+  Returns the path and file name of the current configuration INI file.
 
   plat
   Returns the platform for which this was compiled, e.g., linux_2_0_36
@@ -159,7 +157,7 @@
   With get, returns the integer value of EMC_DEBUG, in the EMC. Note that
   it may not be true that the local EMC_DEBUG variable here (in emcsh and
   the GUIs that use it) is the same as the EMC_DEBUG value in the EMC. This
-  can happen if the EMC is started from one .ini file, and the GUI is started
+  can happen if the EMC is started from one INI file, and the GUI is started
   with another that has a different value for DEBUG.
   With set, sends a command to the EMC to set the new debug level,
   and sets the EMC_DEBUG global here to the same value. This will make
@@ -282,7 +280,7 @@ struct option longopts[] = {
   {"connectpw", 1, NULL, 'w'},
   {"enablepw", 1, NULL, 'e'},
   {"path", 1, NULL, 'd'},
-  {0,0,0,0}
+  {NULL,0,NULL,0}
   };
 
 
@@ -290,27 +288,27 @@ static void thisQuit()
 {
     EMC_NULL emc_null_msg;
 
-    if (emcStatusBuffer != 0) {
+    if (emcStatusBuffer != NULL) {
 	// wait until current message has been received
 	emcCommandWaitReceived();
     }
 
     // clean up NML buffers
 
-    if (emcErrorBuffer != 0) {
+    if (emcErrorBuffer != NULL) {
 	delete emcErrorBuffer;
-	emcErrorBuffer = 0;
+	emcErrorBuffer = NULL;
     }
 
-    if (emcStatusBuffer != 0) {
+    if (emcStatusBuffer != NULL) {
 	delete emcStatusBuffer;
-	emcStatusBuffer = 0;
-	emcStatus = 0;
+	emcStatusBuffer = NULL;
+	emcStatus = NULL;
     }
 
-    if (emcCommandBuffer != 0) {
+    if (emcCommandBuffer != NULL) {
 	delete emcCommandBuffer;
-	emcCommandBuffer = 0;
+	emcCommandBuffer = NULL;
     }
 
     exit(0);
@@ -323,20 +321,20 @@ static int initSockets()
   server_address.sin_addr.s_addr = htonl(INADDR_ANY);
   server_address.sin_port = htons(port);
   server_len = sizeof(server_address);
-  bind(server_sockfd, (struct sockaddr *)&server_address, server_len);
+  bind(server_sockfd, reinterpret_cast<struct sockaddr *>(&server_address), server_len);
   listen(server_sockfd, 5);
   signal(SIGCHLD, SIG_IGN);
   return 0;
 }
 
-static void sigQuit(int sig)
+static void sigQuit(int /*sig*/)
 {
     thisQuit();
 }
 
 static int sockWrite(connectionRecType *context)
 {
-   rtapi_strxcat(context->outBuf, "\r\n");
+   nml_strxcat(context->outBuf, "\r\n");
    return write(context->cliSock, context->outBuf, strlen(context->outBuf));
 }
 
@@ -364,11 +362,11 @@ static int commandHello(connectionRecType *context)
   if (strcmp(pch, pwd) != 0) return -1;
   pch = strtok(NULL, delims);
   if (pch == NULL) return -1;
-  rtapi_strxcpy(context->hostName, pch);  
+  nml_strxcpy(context->hostName, pch);
   pch = strtok(NULL, delims);
   if (pch == NULL) return -1;
   context->linked = true;    
-  rtapi_strxcpy(context->version, pch);
+  nml_strxcpy(context->version, pch);
   printf("Connected to %s\n", context->hostName);
   return 0;
 }
@@ -452,7 +450,7 @@ static cmdResponseType setEnable(char *s, connectionRecType *context)
      else return rtStandardError;
 }
 
-static cmdResponseType setDebug(char *s, connectionRecType *context)
+static cmdResponseType setDebug(char *s, connectionRecType * /*context*/)
 {
   int level;
   
@@ -462,7 +460,7 @@ static cmdResponseType setDebug(char *s, connectionRecType *context)
   return rtNoError;
 }
 
-static cmdResponseType setConfig(char *s, connectionRecType *context)
+static cmdResponseType setConfig(char * /*s*/, connectionRecType * /*context*/)
 {
   return rtNoError;
 }
@@ -477,17 +475,17 @@ static cmdResponseType setCommMode(char *s, connectionRecType *context)
   return rtNoError;
 }
 
-static cmdResponseType setCommProt(char *s, connectionRecType *context)
+static cmdResponseType setCommProt(char * /*s*/, connectionRecType *context)
 {
   char *pVersion;
   
   pVersion = strtok(NULL, delims);
   if (pVersion == NULL) return rtStandardError;
-  rtapi_strxcpy(context->version, pVersion);
+  nml_strxcpy(context->version, pVersion);
   return rtNoError;
 }
 
-static cmdResponseType setQMode(char *s, connectionRecType *context)
+static cmdResponseType setQMode(char *s, connectionRecType * /*context*/)
 {
   queueStatusType st;
 
@@ -504,7 +502,7 @@ static cmdResponseType setQMode(char *s, connectionRecType *context)
   return rtNoError;
 }
 
-static cmdResponseType setAutoTagId(char *s, connectionRecType *context)
+static cmdResponseType setAutoTagId(char *s, connectionRecType * /*context*/)
 {
   int tagId;
 
@@ -514,7 +512,7 @@ static cmdResponseType setAutoTagId(char *s, connectionRecType *context)
   return rtNoError;
 }
 
-static cmdResponseType setPgmAdd(connectionRecType *context)
+static cmdResponseType setPgmAdd(connectionRecType * /*context*/)
 {
   char *pch;
   int pri;
@@ -562,7 +560,7 @@ static cmdResponseType setPgmAdd(connectionRecType *context)
   return rtNoError;
 }
 
-static cmdResponseType setPriorityById(connectionRecType *context)
+static cmdResponseType setPriorityById(connectionRecType * /*context*/)
 {
   int id;
   int pri;
@@ -578,7 +576,7 @@ static cmdResponseType setPriorityById(connectionRecType *context)
   return rtNoError;
 }
 
-static cmdResponseType setPriorityByIndex(connectionRecType *context)
+static cmdResponseType setPriorityByIndex(connectionRecType * /*context*/)
 {
   int index;
   int pri;
@@ -594,7 +592,7 @@ static cmdResponseType setPriorityByIndex(connectionRecType *context)
   return rtNoError;
 }
 
-static cmdResponseType setDeleteById(char *s, connectionRecType *context)
+static cmdResponseType setDeleteById(char *s, connectionRecType * /*context*/)
 {
   int id;
 
@@ -603,7 +601,7 @@ static cmdResponseType setDeleteById(char *s, connectionRecType *context)
   return rtNoError;
 }
 
-static cmdResponseType setDeleteByIndex(char *s, connectionRecType *context)
+static cmdResponseType setDeleteByIndex(char *s, connectionRecType * /*context*/)
 {
   int index;
 
@@ -613,7 +611,7 @@ static cmdResponseType setDeleteByIndex(char *s, connectionRecType *context)
   return rtNoError;
 }
 
-static cmdResponseType setPollRate(char *s, connectionRecType *context)
+static cmdResponseType setPollRate(char *s, connectionRecType * /*context*/)
 {
   float rate;
 
@@ -683,12 +681,12 @@ int commandSet(connectionRecType *context)
     case rtCustomError: // Custom error response entered in buffer
       return write(context->cliSock, context->outBuf, strlen(context->outBuf));
       break;
-    case rtCustomHandledError: ;// Custom error respose handled, take no action
+    case rtCustomHandledError: ;// Custom error response handled, take no action
     }
   return 0;
 }
 
-static cmdResponseType getEcho(char *s, connectionRecType *context)
+static cmdResponseType getEcho(char * /*s*/, connectionRecType *context)
 {
   const char *pEchoStr = "ECHO %s";
   
@@ -697,7 +695,7 @@ static cmdResponseType getEcho(char *s, connectionRecType *context)
   return rtNoError;
 }
 
-static cmdResponseType getVerbose(char *s, connectionRecType *context)
+static cmdResponseType getVerbose(char * /*s*/, connectionRecType *context)
 {
   const char *pVerboseStr = "VERBOSE %s";
   
@@ -706,7 +704,7 @@ static cmdResponseType getVerbose(char *s, connectionRecType *context)
   return rtNoError;
 }
 
-static cmdResponseType getEnable(char *s, connectionRecType *context)
+static cmdResponseType getEnable(char * /*s*/, connectionRecType *context)
 {
   const char *pEnableStr = "ENABLE %s";
   
@@ -717,15 +715,15 @@ static cmdResponseType getEnable(char *s, connectionRecType *context)
   return rtNoError;
 }
 
-static cmdResponseType getConfig(char *s, connectionRecType *context)
+static cmdResponseType getConfig(char * /*s*/, connectionRecType *context)
 {
   const char *pConfigStr = "CONFIG";
 
-  rtapi_strxcpy(context->outBuf, pConfigStr);
+  nml_strxcpy(context->outBuf, pConfigStr);
   return rtNoError;
 }
 
-static cmdResponseType getCommMode(char *s, connectionRecType *context)
+static cmdResponseType getCommMode(char * /*s*/, connectionRecType *context)
 {
   const char *pCommModeStr = "COMM_MODE %s";
   
@@ -736,7 +734,7 @@ static cmdResponseType getCommMode(char *s, connectionRecType *context)
   return rtNoError;
 }
 
-static cmdResponseType getCommProt(char *s, connectionRecType *context)
+static cmdResponseType getCommProt(char * /*s*/, connectionRecType *context)
 {
   const char *pCommProtStr = "COMM_PROT %s";
   
@@ -744,7 +742,7 @@ static cmdResponseType getCommProt(char *s, connectionRecType *context)
   return rtNoError;
 }
 
-static cmdResponseType getDebug(char *s, connectionRecType *context)
+static cmdResponseType getDebug(char * /*s*/, connectionRecType *context)
 {
   const char *pUpdateStr = "DEBUG %d";
   
@@ -752,7 +750,7 @@ static cmdResponseType getDebug(char *s, connectionRecType *context)
   return rtNoError;
 }
 
-static cmdResponseType getIniFile(char *s, connectionRecType *context)
+static cmdResponseType getIniFile(char * /*s*/, connectionRecType *context)
 {
   const char *pIniFile = "INIFILE %s";
   
@@ -760,7 +758,7 @@ static cmdResponseType getIniFile(char *s, connectionRecType *context)
   return rtNoError;
 }
 
-static cmdResponseType getPlat(char *s, connectionRecType *context)
+static cmdResponseType getPlat(char * /*s*/, connectionRecType *context)
 {
   const char *pPlatStr = "PLAT %s";
   
@@ -768,7 +766,7 @@ static cmdResponseType getPlat(char *s, connectionRecType *context)
   return rtNoError;  
 }
 
-static cmdResponseType getQMode(char *s, connectionRecType *context)
+static cmdResponseType getQMode(char * /*s*/, connectionRecType *context)
 {
   const char *pQMode = "QMODE %s";
 
@@ -926,7 +924,7 @@ int commandGet(connectionRecType *context)
     case rtCustomError: // Custom error response entered in buffer
       sockWrite(context);
       break;
-    case rtCustomHandledError: ;// Custom error respose handled, take no action
+    case rtCustomHandledError: ;// Custom error response handled, take no action
     }
   return 0;
 }
@@ -951,11 +949,11 @@ int commandShutdown(connectionRecType *context)
 static int helpGeneral(connectionRecType *context)
 {
   snprintf(context->outBuf, sizeof(context->outBuf), "Available commands:\n\r");
-  rtapi_strxcat(context->outBuf, "  Hello <password> <client name> <protocol version>\n\r");
-  rtapi_strxcat(context->outBuf, "  Get <emc command>\n\r");
-  rtapi_strxcat(context->outBuf, "  Set <emc command>\n\r");
-  rtapi_strxcat(context->outBuf, "  Shutdown\n\r");
-  rtapi_strxcat(context->outBuf, "  Help <command>\n\r");
+  nml_strxcat(context->outBuf, "  Hello <password> <client name> <protocol version>\n\r");
+  nml_strxcat(context->outBuf, "  Get <emc command>\n\r");
+  nml_strxcat(context->outBuf, "  Set <emc command>\n\r");
+  nml_strxcat(context->outBuf, "  Shutdown\n\r");
+  nml_strxcat(context->outBuf, "  Help <command>\n\r");
   sockWrite(context);
   return 0;
 }
@@ -963,18 +961,18 @@ static int helpGeneral(connectionRecType *context)
 static int helpHello(connectionRecType *context)
 {
   snprintf(context->outBuf, sizeof(context->outBuf), "Usage:\n\r");
-  rtapi_strxcat(context->outBuf, "  Hello <Password> <Client Name> <Protocol Version>\n\rWhere:\n\r");
-  rtapi_strxcat(context->outBuf, "  Password is the connection password to allow communications with the CNC server.\n\r");
-  rtapi_strxcat(context->outBuf, "  Client Name is the name of client trying to connect, typically the network name of the client.\n\r");
-  rtapi_strxcat(context->outBuf, "  Protocol Version is the version of the protocol with which the client wishes to use.\n\r\n\r");
-  rtapi_strxcat(context->outBuf, "  With valid password, server responds with:\n\r");
-  rtapi_strxcat(context->outBuf, "  Hello Ack <Server Name> <Protocol Version>\n\rWhere:\n\r");
-  rtapi_strxcat(context->outBuf, "  Ack is acknowledging the connection has been made.\n\r");
-  rtapi_strxcat(context->outBuf, "  Server Name is the name of the EMC Server to which the client has connected.\n\r");
-  rtapi_strxcat(context->outBuf, "  Protocol Version is the client requested version or latest version support by server if");
-  rtapi_strxcat(context->outBuf, "  the client requests a version later than that supported by the server.\n\r\n\r");
-  rtapi_strxcat(context->outBuf, "  With invalid password, the server responds with:\n\r");
-  rtapi_strxcat(context->outBuf, "  Hello Nak\n\r");
+  nml_strxcat(context->outBuf, "  Hello <Password> <Client Name> <Protocol Version>\n\rWhere:\n\r");
+  nml_strxcat(context->outBuf, "  Password is the connection password to allow communications with the CNC server.\n\r");
+  nml_strxcat(context->outBuf, "  Client Name is the name of client trying to connect, typically the network name of the client.\n\r");
+  nml_strxcat(context->outBuf, "  Protocol Version is the version of the protocol with which the client wishes to use.\n\r\n\r");
+  nml_strxcat(context->outBuf, "  With valid password, server responds with:\n\r");
+  nml_strxcat(context->outBuf, "  Hello Ack <Server Name> <Protocol Version>\n\rWhere:\n\r");
+  nml_strxcat(context->outBuf, "  Ack is acknowledging the connection has been made.\n\r");
+  nml_strxcat(context->outBuf, "  Server Name is the name of the EMC Server to which the client has connected.\n\r");
+  nml_strxcat(context->outBuf, "  Protocol Version is the client requested version or latest version support by server if");
+  nml_strxcat(context->outBuf, "  the client requests a version later than that supported by the server.\n\r\n\r");
+  nml_strxcat(context->outBuf, "  With invalid password, the server responds with:\n\r");
+  nml_strxcat(context->outBuf, "  Hello Nak\n\r");
   sockWrite(context);
   return 0;
 }
@@ -982,24 +980,24 @@ static int helpHello(connectionRecType *context)
 static int helpGet(connectionRecType *context)
 {
   snprintf(context->outBuf, sizeof(context->outBuf), "Usage:\n\rGet <emc command>\n\r");
-  rtapi_strxcat(context->outBuf, "  Get commands require that a hello has been successfully negotiated.\n\r");
-  rtapi_strxcat(context->outBuf, "  Emc command may be one of:\n\r");
-  rtapi_strxcat(context->outBuf, "    AutoTagId\n\r");
-  rtapi_strxcat(context->outBuf, "    Comm_mode\n\r");
-  rtapi_strxcat(context->outBuf, "    Comm_prot\n\r");
-  rtapi_strxcat(context->outBuf, "    Debug\n\r");
-  rtapi_strxcat(context->outBuf, "    Echo\n\r");
-  rtapi_strxcat(context->outBuf, "    Enable\n\r");
-  rtapi_strxcat(context->outBuf, "    Inifile\n\r");
-  rtapi_strxcat(context->outBuf, "    PgmById <Tag Id>\n\r");
-  rtapi_strxcat(context->outBuf, "    PgmByIndex <Index>\n\r");
-  rtapi_strxcat(context->outBuf, "    PriorityById <Tag Id>\n\r");
-  rtapi_strxcat(context->outBuf, "    PriorityByIndex <Tag Index>\n\r");
-  rtapi_strxcat(context->outBuf, "    Plat\n\r");
-  rtapi_strxcat(context->outBuf, "    QMode\n\r");
-  rtapi_strxcat(context->outBuf, "    QStatus\n\r");
-  rtapi_strxcat(context->outBuf, "    Verbose\n\r");
-//  rtapi_strxcat(context->outBuf, "CONFIG\n\r");
+  nml_strxcat(context->outBuf, "  Get commands require that a hello has been successfully negotiated.\n\r");
+  nml_strxcat(context->outBuf, "  Emc command may be one of:\n\r");
+  nml_strxcat(context->outBuf, "    AutoTagId\n\r");
+  nml_strxcat(context->outBuf, "    Comm_mode\n\r");
+  nml_strxcat(context->outBuf, "    Comm_prot\n\r");
+  nml_strxcat(context->outBuf, "    Debug\n\r");
+  nml_strxcat(context->outBuf, "    Echo\n\r");
+  nml_strxcat(context->outBuf, "    Enable\n\r");
+  nml_strxcat(context->outBuf, "    Inifile\n\r");
+  nml_strxcat(context->outBuf, "    PgmById <Tag Id>\n\r");
+  nml_strxcat(context->outBuf, "    PgmByIndex <Index>\n\r");
+  nml_strxcat(context->outBuf, "    PriorityById <Tag Id>\n\r");
+  nml_strxcat(context->outBuf, "    PriorityByIndex <Tag Index>\n\r");
+  nml_strxcat(context->outBuf, "    Plat\n\r");
+  nml_strxcat(context->outBuf, "    QMode\n\r");
+  nml_strxcat(context->outBuf, "    QStatus\n\r");
+  nml_strxcat(context->outBuf, "    Verbose\n\r");
+//  nml_strxcat(context->outBuf, "CONFIG\n\r");
   sockWrite(context);
   return 0;
 }
@@ -1007,22 +1005,22 @@ static int helpGet(connectionRecType *context)
 static int helpSet(connectionRecType *context)
 {
   snprintf(context->outBuf, sizeof(context->outBuf), "Usage:\n\r  Set <emc command>\n\r");
-  rtapi_strxcat(context->outBuf, "  Set commands require that a hello has been successfully negotiated,\n\r");
-  rtapi_strxcat(context->outBuf, "  in most instances requires that control be enabled by the connection.\n\r");
-  rtapi_strxcat(context->outBuf, "  The set commands not requiring control enabled are:\n\r");
-  rtapi_strxcat(context->outBuf, "    Comm_mode <mode>\n\r");
-  rtapi_strxcat(context->outBuf, "    Comm_prot <protocol>\n\r");
-  rtapi_strxcat(context->outBuf, "    Echo <On | Off>\n\r");
-  rtapi_strxcat(context->outBuf, "    Enable <Pwd | Off>\n\r");
-  rtapi_strxcat(context->outBuf, "    Verbose <On | Off>\n\r\n\r");
-  rtapi_strxcat(context->outBuf, "  The set commands requiring control enabled are:\n\r");
-  rtapi_strxcat(context->outBuf, "    AutoTagId <Start Id>\n\r");
-  rtapi_strxcat(context->outBuf, "    PgmAdd <Priority> <Tag Id> <X> <Y> <Z> <Zone> <File Name> <Feed Override> <Spindle Override> <Tool No>\n\r");
-  rtapi_strxcat(context->outBuf, "    PriorityById <Tag Id> <Priority>\n\r");
-  rtapi_strxcat(context->outBuf, "    PriorityByIndex <Index> <Priority>\n\r");
-  rtapi_strxcat(context->outBuf, "    DeleteById <Tag Id> \n\r");
-  rtapi_strxcat(context->outBuf, "    DeleteByIndex <Index> \n\r");
-  rtapi_strxcat(context->outBuf, "    QMode <stop | run | pause | resume>\n\r");
+  nml_strxcat(context->outBuf, "  Set commands require that a hello has been successfully negotiated,\n\r");
+  nml_strxcat(context->outBuf, "  in most instances requires that control be enabled by the connection.\n\r");
+  nml_strxcat(context->outBuf, "  The set commands not requiring control enabled are:\n\r");
+  nml_strxcat(context->outBuf, "    Comm_mode <mode>\n\r");
+  nml_strxcat(context->outBuf, "    Comm_prot <protocol>\n\r");
+  nml_strxcat(context->outBuf, "    Echo <On | Off>\n\r");
+  nml_strxcat(context->outBuf, "    Enable <Pwd | Off>\n\r");
+  nml_strxcat(context->outBuf, "    Verbose <On | Off>\n\r\n\r");
+  nml_strxcat(context->outBuf, "  The set commands requiring control enabled are:\n\r");
+  nml_strxcat(context->outBuf, "    AutoTagId <Start Id>\n\r");
+  nml_strxcat(context->outBuf, "    PgmAdd <Priority> <Tag Id> <X> <Y> <Z> <Zone> <File Name> <Feed Override> <Spindle Override> <Tool No>\n\r");
+  nml_strxcat(context->outBuf, "    PriorityById <Tag Id> <Priority>\n\r");
+  nml_strxcat(context->outBuf, "    PriorityByIndex <Index> <Priority>\n\r");
+  nml_strxcat(context->outBuf, "    DeleteById <Tag Id> \n\r");
+  nml_strxcat(context->outBuf, "    DeleteByIndex <Index> \n\r");
+  nml_strxcat(context->outBuf, "    QMode <stop | run | pause | resume>\n\r");
  
   sockWrite(context);
   return 0;
@@ -1031,9 +1029,9 @@ static int helpSet(connectionRecType *context)
 static int helpQuit(connectionRecType *context)
 {
   snprintf(context->outBuf, sizeof(context->outBuf), "Usage:\n\r");
-  rtapi_strxcat(context->outBuf, "  The quit command has the server initiate a disconnect from the client,\n\r");
-  rtapi_strxcat(context->outBuf, "  the command has no parameters and no requirements to have negotiated\n\r");
-  rtapi_strxcat(context->outBuf, "  a hello, or be in control.");
+  nml_strxcat(context->outBuf, "  The quit command has the server initiate a disconnect from the client,\n\r");
+  nml_strxcat(context->outBuf, "  the command has no parameters and no requirements to have negotiated\n\r");
+  nml_strxcat(context->outBuf, "  a hello, or be in control.");
   sockWrite(context);
   return 0;
 }
@@ -1041,9 +1039,9 @@ static int helpQuit(connectionRecType *context)
 static int helpShutdown(connectionRecType *context)
 {
   snprintf(context->outBuf, sizeof(context->outBuf), "Usage:\n\r");
-  rtapi_strxcat(context->outBuf, "  The shutdown command terminates the connection with all clients,\n\r");
-  rtapi_strxcat(context->outBuf, "  and initiates a shutdown of EMC. The command has no parameters, and\n\r");
-  rtapi_strxcat(context->outBuf, "  can only be issued by the connection having control.\n\r");
+  nml_strxcat(context->outBuf, "  The shutdown command terminates the connection with all clients,\n\r");
+  nml_strxcat(context->outBuf, "  and initiates a shutdown of EMC. The command has no parameters, and\n\r");
+  nml_strxcat(context->outBuf, "  can only be issued by the connection having control.\n\r");
   sockWrite(context);
   return 0;
 }
@@ -1134,16 +1132,16 @@ int parseCommand(connectionRecType *context)
   return ret;
 }
 
-void *checkQueue(void *arg)
+void *checkQueue(void * /*arg*/)
 {
   while (1) {
     updateQueue();
     sleep((unsigned)pollDelay);
     }
-  return 0;
+  return NULL;
 }  
 
-void *readClient(void *arg)
+void *readClient(void * /*arg*/)
 {
   char str[1600];
   char buf[1600];
@@ -1154,12 +1152,16 @@ void *readClient(void *arg)
   
 //  res = 1;
   context = (connectionRecType *) malloc(sizeof(connectionRecType));
+  if (!context) {
+    fprintf(stderr, "emcrsh: no memory\n");
+    goto fail;
+  }
   context->cliSock = client_sockfd;
   context->linked = false;
   context->echo = true;
   context->verbose = false;
-  rtapi_strxcpy(context->version, "1.0");
-  rtapi_strxcpy(context->hostName, "Default");
+  nml_strxcpy(context->version, "1.0");
+  nml_strxcpy(context->hostName, "Default");
   context->enabled = false;
   context->commMode = 0;
   context->commProt = 0;
@@ -1170,7 +1172,7 @@ void *readClient(void *arg)
     len = read(context->cliSock, &str, 1600);
     if (len <= 0) goto finished;
     str[len] = 0;
-    rtapi_strxcat(buf, str);
+    nml_strxcat(buf, str);
     if (!memchr(str, 0x0d, strlen(str))) continue;
     if (context->echo && context->linked)
       if(write(context->cliSock, buf, strlen(buf)) != (ssize_t)strlen(buf)) {
@@ -1197,7 +1199,8 @@ void *readClient(void *arg)
 finished:
   close(context->cliSock);
   free(context);
-  pthread_exit((void *)0);
+fail:
+  pthread_exit(NULL);
   sessions--;  // FIXME: not reached
 }
 
@@ -1210,7 +1213,7 @@ int sockMain()
       
       client_len = sizeof(client_address);
       client_sockfd = accept(server_sockfd,
-        (struct sockaddr *)&client_address, &client_len);
+        reinterpret_cast<struct sockaddr *>(&client_address), &client_len);
       if (client_sockfd < 0) exit(0);
       sessions++;
       if ((maxSessions == -1) || (sessions <= maxSessions))
@@ -1232,14 +1235,14 @@ static void initMain()
     emcUpdateType = EMC_UPDATE_AUTO;
     linearUnitConversion = LINEAR_UNITS_AUTO;
     angularUnitConversion = ANGULAR_UNITS_AUTO;
-    emcCommandBuffer = 0;
-    emcStatusBuffer = 0;
-    emcStatus = 0;
+    emcCommandBuffer = NULL;
+    emcStatusBuffer = NULL;
+    emcStatus = NULL;
 
-    emcErrorBuffer = 0;
-    error_string[LINELEN-1] = 0;
-    operator_text_string[LINELEN-1] = 0;
-    operator_display_string[LINELEN-1] = 0;
+    emcErrorBuffer = NULL;
+    error_string.clear();
+    operator_text_string.clear();
+    operator_display_string.clear();
     programStartLine = 0;
 }
 
@@ -1254,12 +1257,12 @@ int main(int argc, char *argv[])
     // process local command line args
     while((opt = getopt_long(argc, argv, "e:n:p:s:w:", longopts, NULL)) != -1) {
       switch(opt) {
-        case 'e': strncpy(enablePWD, optarg, strlen(optarg) + 1); break;
-        case 'n': strncpy(serverName, optarg, strlen(optarg) + 1); break;
+        case 'e': snprintf(enablePWD, sizeof(enablePWD), "%s", optarg); break;
+        case 'n': snprintf(serverName, sizeof(serverName), "%s", optarg); break;
         case 'p': sscanf(optarg, "%d", &port); break;
         case 's': sscanf(optarg, "%d", &maxSessions); break;
-        case 'w': strncpy(pwd, optarg, strlen(optarg) + 1); break;
-        case 'd': strncpy(defaultPath, optarg, strlen(optarg) + 1);
+        case 'w': snprintf(pwd, sizeof(pwd), "%s", optarg); break;
+        case 'd': defaultPath = optarg; break;
         }
       }
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 # QTVcp Notification Module
 # Provides a consistent and easy to use facility for showing system notifications.
@@ -21,25 +21,36 @@ from collections import OrderedDict
 
 # Set up logging
 from qtvcp import logger
+
 LOG = logger.getLogger(__name__)
 
 DBusQtMainLoop = None
-try:
-    from dbus.mainloop.pyqt5 import DBusQtMainLoop
-except ImportError:
-    LOG.warning("Could not import DBusQtMainLoop, is package 'python-dbus.mainloop.pyqt5' installed?")
+for _mod in ('dbus.mainloop.pyqt5', 'dbus.mainloop.pyqt6'):
+    try:
+        import importlib
+        DBusQtMainLoop = importlib.import_module(_mod).DBusQtMainLoop
+        break
+    except ImportError:
+        pass
+if DBusQtMainLoop is None:
+    LOG.warning("Could not import a DBus Qt main loop integration. "
+                "Install python3-dbus.mainloop.pyqt5 or python3-dbus.mainloop.pyqt6 "
+                "for desktop notification callbacks.")
 
 APP_NAME = ''
 DBUS_IFACE = None
 NOTIFICATIONS = {}
 
+
 class Urgency:
     """freedesktop.org notification urgency levels"""
     LOW, NORMAL, CRITICAL = list(range(3))
 
+
 class UninitializedError(RuntimeError):
     """Error raised if you try to show an error before initializing"""
     pass
+
 
 def init(app_name):
     """Initializes the DBus connection"""
@@ -50,21 +61,31 @@ def init(app_name):
     path = "/org/freedesktop/Notifications"
     interface = "org.freedesktop.Notifications"
 
-    mainloop = None
     try:
-        if DBusQtMainLoop is not None:
-            mainloop = DBusQtMainLoop(set_as_default=True)
+        # Probe on a throwaway no-mainloop connection first. Wiring the
+        # Qt dbus mainloop before a daemon is confirmed leaves a dangling
+        # QSocketNotifier that segfaults on its next dispatch.
+        probe = dbus.SessionBus(private=True)
+        try:
+            present = probe.name_has_owner(name)
+        finally:
+            probe.close()
+        if not present:
+            # No daemon: pop-up notifications cannot be shown.
+            raise RuntimeError('no notification daemon on the session bus; desktop notifications disabled')
 
-        bus = dbus.SessionBus(mainloop)
+        mainloop = DBusQtMainLoop(set_as_default=True) if DBusQtMainLoop else None
+        bus = dbus.SessionBus(mainloop=mainloop)
         proxy = bus.get_object(name, path)
         DBUS_IFACE = dbus.Interface(proxy, interface)
 
         if mainloop is not None:
-            # We have a mainloop, so connect callbacks
             DBUS_IFACE.connect_to_signal('ActionInvoked', _onActionInvoked)
             DBUS_IFACE.connect_to_signal('NotificationClosed', _onNotificationClosed)
     except Exception as e:
-        LOG.warning('Descktop Notify not availale:: {}'.format(e))
+        LOG.warning('Desktop Notify not available:: {}'.format(e))
+        DBUS_IFACE = None
+
 
 def _onActionInvoked(nid, action):
     """Called when a notification action is clicked"""
@@ -76,6 +97,7 @@ def _onActionInvoked(nid, action):
         return
     notification._onActionInvoked(action)
 
+
 def _onNotificationClosed(nid, reason):
     """Called when the notification is closed"""
     nid, reason = int(nid), int(reason)
@@ -86,6 +108,7 @@ def _onNotificationClosed(nid, reason):
         return
     notification._onNotificationClosed(notification)
     del NOTIFICATIONS[nid]
+
 
 class Notification(object):
     """Notification object"""
@@ -103,15 +126,16 @@ class Notification(object):
             icon (str, optional):     The icon to display with the notification
             timeout (TYPE, optional): The time in ms before the notification hides, -1 for default, 0 for never
         """
-        self.title = title              # title of the notification
-        self.body = body                # the body text of the notification
+        self.title = title  # title of the notification
+        self.body = body  # the body text of the notification
         if icon is None:
-            icon = ''                   # Fix for legacy use
-        self.icon = icon                # the path to the icon to use
-        self.timeout = timeout          # time in ms before the notification disappears
-        self.hints = {}                 # dict of various display hints
-        self.actions = OrderedDict()    # actions names and their callbacks
-        self.data = {}                  # arbitrary user data
+            icon = ''  # Fix for legacy use
+        self.icon = icon  # the path to the icon to use
+        self.timeout = timeout  # time in ms before the notification disappears
+        self.hints = {}  # dict of various display hints
+        self.actions = OrderedDict()  # actions names and their callbacks
+        self.data = {}  # arbitrary user data
+        self.isVisible = False
 
     def show(self):
         try:
@@ -120,24 +144,25 @@ class Notification(object):
 
             """Asks the notification server to show the notification"""
             nid = DBUS_IFACE.Notify(APP_NAME,
-                               self.id,
-                               self.icon,
-                               self.title,
-                               self.body,
-                               self._makeActionsList(),
-                               self.hints,
-                               self.timeout,
-                            )
+                                    self.id,
+                                    self.icon,
+                                    self.title,
+                                    self.body,
+                                    self._makeActionsList(),
+                                    self.hints,
+                                    self.timeout,
+                                    )
 
             self.id = int(nid)
-
+            self.isVisible = True
             NOTIFICATIONS[self.id] = self
             return True
         except Exception as e:
-            LOG.debug('Descktop Notify: {}'.format(e))
+            LOG.debug('Desktop Notify: {}'.format(e))
 
     def close(self):
         """Ask the notification server to close the notification"""
+        self.isVisible = False
         try:
             if self.id != 0:
                 DBUS_IFACE.CloseNotification(self.id)
@@ -146,12 +171,13 @@ class Notification(object):
 
     def onClose(self, callback):
         """Set the callback called when the notification is closed"""
+        self.isVisible = False
         self._onNotificationClosed = callback
 
     def setUrgency(self, value):
         """Set the freedesktop.org notification urgency level"""
         if value not in list(range(3)):
-            raise ValueError("Unknown urgency level '%s' specified" % level)
+            raise ValueError("Unknown urgency level '%s' specified" % value)
         self.hints['urgency'] = dbus.Byte(value)
 
     def setSoundFile(self, sound_file):
@@ -215,6 +241,9 @@ class Notification(object):
         except KeyError:
             return
 
+        if callback is None:
+            LOG.INFO('Callback is None: {}'.format(label))
+            return
         if user_data is None:
             callback(self, action)
         else:
@@ -224,23 +253,27 @@ class Notification(object):
 # ----------------------- E X A M P L E -----------------------
 
 def onHelp(n, action):
-    assert(action == "help"), "Action was not help!"
+    assert (action == "help"), "Action was not help!"
     print("You clicked Help action")
     n.close()
 
+
 def onIgnore(n, action, data):
-    assert(action == "ignore"), "Action was not ignore!"
+    assert (action == "ignore"), "Action was not ignore!"
     print("You clicked Ignore action")
     print("Passed user data was: ", data)
     n.close()
+
 
 def onClose(n):
     print("Notification closed")
     app.quit()
 
+
 if __name__ == "__main__":
     import sys
-    from PyQt5.QtCore import QCoreApplication
+    from qtpy.QtCore import QCoreApplication
+
     app = QCoreApplication(sys.argv)
 
     # Initialize the DBus connection to the notification server
@@ -251,7 +284,7 @@ if __name__ == "__main__":
                      "This notification is very important as it " +
                      "notifies you that notifications are working.",
                      timeout=3000
-                    )
+                     )
     n.setUrgency(Urgency.NORMAL)
     n.setCategory("device")
     n.setIconPath("/usr/share/icons/Tango/scalable/status/dialog-error.svg")
@@ -262,4 +295,4 @@ if __name__ == "__main__":
     n.onClose(onClose)
 
     n.show()
-    app.exec_()
+    app.exec()

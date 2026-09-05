@@ -1,0 +1,421 @@
+component homecomp "homing module template";
+
+description """
+Example of a plug-in homing module buildable with halcompile.
+Demonstrates the required code structure for #includes, function
+definitions, HAL pins, etc.
+
+The complete homing module interface (every function a homing module
+must export, when motmod calls it, and what it should do) is
+documented in `src/emc/motion/homing.h`.
+
+Build modes:
+
+* *Skeleton* (default).  If HOMING_BASE is _not_ #defined, the module
+  implements the full homing API but runs no real homing state
+  machine.  A hal pin `motion.allow-sim-homed` (default true) gates
+  the simulated homed state: with it set, all joints are immediately
+  reported as homed, which is useful for bring-up and config testing
+  on hardware without working home switches.  With it cleared, each
+  joint reports homed only while its `joint.N.home-sw-in` pin is
+  true, showing how HAL inputs feed the homing API.
+
+* *Custom* (advanced).  If HOMING_BASE is #defined to the absolute
+  path of a checkout's `src/emc/motion/homing.c`, this component
+  #includes that file with CUSTOM_HOMEMODULE defined.  This brings in
+  the static base_*() helpers from homing.c so user code can call
+  them or override the per-joint state machine.  This is the same
+  pattern used historically by user_homecomp templates; it requires a
+  full LinuxCNC source checkout because homing.c is not installed.
+
+The custom module is an example only: it adds per-joint hal pins
+`joint.N.request-custom-homing` and `joint.N.is-custom-homing` so the
+operator can pick which joints get the custom path.  Requested joints
+are simply marked homed immediately; a real custom module would run
+its own state machine here instead of calling
+base_1joint_state_machine().
+
+To avoid updates that overwrite this template, best practice is to
+rename the file and its component name (example: *user_homecomp.comp*,
+*user_homecomp*).
+
+The renamed component can be built and installed with halcompile and
+then substituted for the default homing module (*homemod*) using:
+
+  $ linuxcnc -m user_homecomp someconfig.ini
+
+or by inifile setting:
+
+[source,ini]
+----
+[EMCMOT]
+HOMEMOD=user_homecomp
+----
+
+*Note*: If using a deb install:
+
+1. halcompile is provided by the package linuxcnc-dev +
+2. This source file for BRANCHNAME (master, 2.9, etc.) is downloadable
+   from github:
+https://github.com/LinuxCNC/linuxcnc/blob/BRANCHNAME/src/hal/components/homecomp.comp
+""";
+
+pin out bool is_module = 1; // one pin is required to use halcompile
+
+license "GPL";
+author "Dewey Garrett";
+option  homemod;
+option  extra_setup;
+;;
+
+#define STR(s) #s
+#define XSTR(s) STR(s)
+
+// Fail fast on pin-creation errors: summing return values hides which
+// call failed and mangles the error code.
+#define CHK(x)                          \
+    do {                                \
+        int _rv = (x);                  \
+        if (0 != _rv) return _rv;       \
+    } while (0)
+
+// To build the custom variant, uncomment and point at a checkout:
+// #define HOMING_BASE /home/myname/linuxcnc-dev/src/emc/motion/homing.c
+
+// ---- module parameter (homemod forwards to user module) -------------
+static char *home_parms;
+RTAPI_MP_STRING(home_parms, "Example home parms");
+
+// EXTRA_SETUP runs after hal_init(), before motmod resolves symbols.
+// The default for allow_sim_homed is set to 1 in mkp() below so the
+// skeleton is truly "always homed" out of the box.
+EXTRA_SETUP() {
+    (void)__comp_inst;
+    (void)prefix;
+    (void)extra_arg;
+    if (!home_parms) home_parms = "no_home_parms";
+    rtapi_print("homecomp: %s: home_parms=%s\n", __FUNCTION__, home_parms);
+#ifndef HOMING_BASE
+    rtapi_print("homecomp: skeleton mode (always homed unless "
+                "motion.allow-sim-homed = 0)\n");
+#else
+    rtapi_print("homecomp: custom mode, HOMING_BASE=%s\n",
+                XSTR(HOMING_BASE));
+#endif
+    return 0;
+}
+
+//=====================================================================
+// SKELETON: minimal API implementation, no real homing.
+// With allow_sim_homed set, all queries report homed.  With it
+// cleared, get_homed() follows the per-joint home_sw pin to show how
+// HAL inputs wire into the get_* helpers.
+//
+// The skeleton uses opaque pointer and integer arguments so it does
+// not depend on motion.h.
+//=====================================================================
+#ifndef HOMING_BASE
+
+// ---- example: per-joint hal-pin block -------------------------------
+typedef struct {
+    hal_bool_t home_sw;       // IN  : switch state to homing FSM
+    hal_bool_t homing;        // OUT : homing in progress
+    hal_bool_t homed;         // OUT : joint is homed
+    hal_sint_t home_state;    // OUT : state machine state (enum)
+    hal_bool_t index_enable;  // IO  : motmod sets / encoder clears
+} one_joint_home_data_t;
+
+// All pin storage must live in HAL shared memory, so everything goes
+// in a single hal_malloc'd block sized from n_joints at runtime (see
+// homing_init); the template does not depend on EMCMOT_MAX_JOINTS.
+typedef struct {
+    hal_bool_t allow_sim_homed;   // HAL_IO: motion.allow-sim-homed
+    one_joint_home_data_t jhd[];  // n_joints entries
+} home_data_t;
+
+static home_data_t *hd = 0;
+static int g_njoints;             // saved count
+
+#define joint_home_data     (hd->jhd)
+#define allow_sim_homed_pin (hd->allow_sim_homed)
+
+// Create the per-joint HAL pins plus a single module-level pin.
+static int mkp(int id, int njoints)
+{
+    int jno;
+    one_joint_home_data_t *p;
+
+    hd = hal_malloc(sizeof(home_data_t) +
+                    njoints * sizeof(one_joint_home_data_t));
+    if (hd == 0) {
+        rtapi_print_msg(RTAPI_MSG_ERR,
+            "homecomp: home_data_t malloc failed\n");
+        return -1;
+    }
+
+    CHK(hal_pin_new_bool(id, HAL_IO, &allow_sim_homed_pin, 1,
+                         "motion.allow-sim-homed"));
+
+    for (jno = 0; jno < njoints; jno++) {
+        p = &joint_home_data[jno];
+        CHK(hal_pin_new_bool(id, HAL_IN,  &p->home_sw,      0,
+                             "joint.%d.home-sw-in",   jno));
+        CHK(hal_pin_new_bool(id, HAL_OUT, &p->homing,       0,
+                             "joint.%d.homing",        jno));
+        CHK(hal_pin_new_bool(id, HAL_OUT, &p->homed,        0,
+                             "joint.%d.homed",         jno));
+        CHK(hal_pin_new_si32(id, HAL_OUT, &p->home_state,   0,
+                             "joint.%d.home-state",    jno));
+        CHK(hal_pin_new_bool(id, HAL_IO,  &p->index_enable, 0,
+                             "joint.%d.index-enable",  jno));
+    }
+    return 0;
+}
+
+bool get_homed(int jno)
+{
+    if (jno < 0 || jno >= g_njoints) return 0;
+    if (hal_get_bool(allow_sim_homed_pin)) return 1;
+    return hal_get_bool(joint_home_data[jno].home_sw);
+}
+
+// HAL samples IN/IO pins before read_homing_in_pins() runs; the
+// skeleton's get_*() helpers read the pin storage directly, so there
+// is nothing to latch here.
+static void rd(int njoints)
+{
+    (void)njoints;
+}
+
+// Mirror the internal homed state onto the HAL output pins once per
+// servo period so GUIs and hal meters see what motion believes.
+static void wr(int njoints)
+{
+    int jno;
+    for (jno = 0; jno < njoints; jno++) {
+        one_joint_home_data_t *p = &joint_home_data[jno];
+        hal_set_bool(p->homing, 0);
+        hal_set_bool(p->homed, get_homed(jno));
+        hal_set_si32(p->home_state, 0);   // HOME_IDLE
+    }
+}
+
+int homing_init(int id, double servo_period, int n_joints,
+                int n_extrajoints, void *pjoints)
+{
+    (void)servo_period; (void)n_extrajoints; (void)pjoints;
+    g_njoints = n_joints;
+    return mkp(id, n_joints);
+}
+
+void homeMotFunctions(void (*pSet)(int,int), int (*pGet)(int))
+{
+    (void)pSet; (void)pGet;
+}
+
+bool get_allhomed(void)
+{
+    int jno;
+    for (jno = 0; jno < g_njoints; jno++) {
+        if (!get_homed(jno)) return 0;
+    }
+    return 1;
+}
+
+// Return 1 on the not-allhomed => allhomed transition so motmod
+// switches from FREE to teleop mode, matching base_do_homing().
+bool do_homing(void)
+{
+    static bool was_allhomed;
+    bool now = get_allhomed();
+    bool completed = !was_allhomed && now;
+    was_allhomed = now;
+    return completed;
+}
+
+bool get_home_is_idle(int jno)            { (void)jno; return 1; }
+bool get_home_is_synchronized(int jno)    { (void)jno; return 0; }
+bool get_home_needs_unlock_first(int jno) { (void)jno; return 0; }
+int  get_home_sequence(int jno)           { (void)jno; return 0; }
+bool get_homing(int jno)                  { (void)jno; return 0; }
+bool get_homing_at_index_search_wait(int jno) { (void)jno; return 0; }
+bool get_homing_is_active(void)               { return 0; }
+bool get_index_enable(int jno)                { (void)jno; return 0; }
+
+void read_homing_in_pins(int njoints)         { rd(njoints); }
+void write_homing_out_pins(int njoints)       { wr(njoints); }
+void do_home_joint(int jno)                   { (void)jno; }
+void do_cancel_homing(int jno)                { (void)jno; }
+void set_unhomed(int jno, int ms)             { (void)jno; (void)ms; }
+
+void set_joint_homing_params(int jno,
+                             double offset, double home,
+                             double home_final_vel,
+                             double home_search_vel,
+                             double home_latch_vel,
+                             int home_flags, int home_sequence,
+                             bool volatile_home)
+{
+    (void)jno; (void)offset; (void)home;
+    (void)home_final_vel; (void)home_search_vel; (void)home_latch_vel;
+    (void)home_flags; (void)home_sequence; (void)volatile_home;
+}
+
+void update_joint_homing_params(int jno, double offset, double home,
+                                int home_sequence)
+{
+    (void)jno; (void)offset; (void)home; (void)home_sequence;
+}
+
+#endif // SKELETON end
+//=====================================================================
+// CUSTOM: include homing.c from a source checkout, override select
+// base_* helpers.  Requires HOMING_BASE set to the absolute path of
+// the user's checkout of src/emc/motion/homing.c.  This block is the
+// original homecomp pattern (forum reference in description above).
+//=====================================================================
+#ifdef HOMING_BASE
+
+// Note: no #include of motion.h/homing.h here.  Those headers are not
+// exported to the halcompile include path; homing.c's own quoted
+// includes resolve relative to its source directory and pull in
+// everything the declarations below need.
+#define USE_HOMING_BASE XSTR(HOMING_BASE)
+#define CUSTOM_HOMEMODULE    // suppress duplicate-symbol exports in homing.c
+#include USE_HOMING_BASE
+
+// Per-joint toggle for the custom state machine.
+typedef struct {
+    hal_bool_t request_custom_homing;   // IN
+    hal_bool_t is_custom_homing;        // OUT (echo)
+} custom_one_joint_home_data_t;
+
+static custom_one_joint_home_data_t *custom_data = 0;
+
+static int custom_makepins(int id, int njoints)
+{
+    int jno;
+    custom_data = hal_malloc(sizeof(*custom_data) * njoints);
+    if (!custom_data) {
+        rtapi_print_msg(RTAPI_MSG_ERR,
+            "homecomp: custom_data malloc failed\n");
+        return -1;
+    }
+    for (jno = 0; jno < njoints; jno++) {
+        CHK(hal_pin_new_bool(id, HAL_IN,
+            &custom_data[jno].request_custom_homing, 0,
+            "joint.%d.request-custom-homing", jno));
+        CHK(hal_pin_new_bool(id, HAL_OUT,
+            &custom_data[jno].is_custom_homing, 0,
+            "joint.%d.is-custom-homing", jno));
+    }
+    return 0;
+}
+
+int homing_init(int id, double servo_period, int n_joints,
+                int n_extrajoints, emcmot_joint_t *pjoints)
+{
+    CHK(base_homing_init(id, servo_period, n_joints,
+                         n_extrajoints, pjoints));
+    CHK(custom_makepins(id, n_joints));
+    return 0;
+}
+
+void read_homing_in_pins(int njoints)
+{
+    base_read_homing_in_pins(njoints);
+    // Sample custom inputs (HAL updates pins, this just records state).
+}
+
+void write_homing_out_pins(int njoints)
+{
+    int jno;
+    base_write_homing_out_pins(njoints);
+    for (jno = 0; jno < njoints; jno++) {
+        if (!custom_data) continue;
+        hal_set_bool(custom_data[jno].is_custom_homing,
+                     hal_get_bool(custom_data[jno].request_custom_homing));
+    }
+}
+
+bool do_homing(void)
+{
+    int jno, busy = 0;
+    bool begin_all = base_get_allhomed();
+    (void)base_do_homing;   // replaced by this custom do_homing()
+    do_homing_sequence();
+    for (jno = 0; jno < all_joints; jno++) {
+        if (!H[jno].joint_in_sequence) continue;
+        if (!GET_JOINT_ACTIVE_FLAG(&joints[jno])) continue;
+        if (custom_data && hal_get_bool(custom_data[jno].request_custom_homing)) {
+            // Trivial example: mark requested joints homed at once.
+            // Real users would run their own state machine here.
+            H[jno].homed = 1;
+            H[jno].homing = 0;
+            H[jno].home_state = HOME_IDLE;
+        } else {
+            busy += base_1joint_state_machine(jno);
+        }
+    }
+    if (busy > 0) homing_active = 1;
+    else if (sequence_state == HOME_SEQUENCE_IDLE) homing_active = 0;
+    if (!begin_all && base_get_allhomed()) { homing_active = 0; return 1; }
+    return 0;
+}
+
+bool get_allhomed(void)                       { return base_get_allhomed(); }
+bool get_homed(int jno)                       { return base_get_homed(jno); }
+bool get_home_is_idle(int jno)                { return base_get_home_is_idle(jno); }
+bool get_home_is_synchronized(int jno)        { return base_get_home_is_synchronized(jno); }
+bool get_home_needs_unlock_first(int jno)     { return base_get_home_needs_unlock_first(jno); }
+int  get_home_sequence(int jno)               { return base_get_home_sequence(jno); }
+bool get_homing(int jno)                      { return base_get_homing(jno); }
+bool get_homing_at_index_search_wait(int jno) { return base_get_homing_at_index_search_wait(jno); }
+bool get_homing_is_active(void)               { return base_get_homing_is_active(); }
+bool get_index_enable(int jno)                { return base_get_index_enable(jno); }
+
+void do_home_joint(int jno)                        { base_do_home_joint(jno); }
+void do_cancel_homing(int jno)                     { base_do_cancel_homing(jno); }
+void set_unhomed(int jno, motion_state_t ms)       { base_set_unhomed(jno, ms); }
+void set_joint_homing_params(int jno,
+                             double offset, double home,
+                             double home_final_vel,
+                             double home_search_vel,
+                             double home_latch_vel,
+                             int home_flags, int home_sequence,
+                             bool volatile_home)
+{
+    base_set_joint_homing_params(jno, offset, home,
+        home_final_vel, home_search_vel, home_latch_vel,
+        home_flags, home_sequence, volatile_home);
+}
+void update_joint_homing_params(int jno, double offset,
+                                double home, int home_sequence)
+{
+    base_update_joint_homing_params(jno, offset, home, home_sequence);
+}
+
+#endif // CUSTOM end
+//=====================================================================
+
+EXPORT_SYMBOL(homeMotFunctions);
+
+EXPORT_SYMBOL(homing_init);
+EXPORT_SYMBOL(do_homing);
+EXPORT_SYMBOL(get_allhomed);
+EXPORT_SYMBOL(get_homed);
+EXPORT_SYMBOL(get_home_is_idle);
+EXPORT_SYMBOL(get_home_is_synchronized);
+EXPORT_SYMBOL(get_home_needs_unlock_first);
+EXPORT_SYMBOL(get_home_sequence);
+EXPORT_SYMBOL(get_homing);
+EXPORT_SYMBOL(get_homing_at_index_search_wait);
+EXPORT_SYMBOL(get_homing_is_active);
+EXPORT_SYMBOL(get_index_enable);
+EXPORT_SYMBOL(read_homing_in_pins);
+EXPORT_SYMBOL(do_home_joint);
+EXPORT_SYMBOL(do_cancel_homing);
+EXPORT_SYMBOL(set_unhomed);
+EXPORT_SYMBOL(set_joint_homing_params);
+EXPORT_SYMBOL(update_joint_homing_params);
+EXPORT_SYMBOL(write_homing_out_pins);
