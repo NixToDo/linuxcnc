@@ -20,7 +20,7 @@
  which is also a good starting point for new drivers.
 
  This driver supports only for demonstration how to write a byte (char)
- to a hardware adress, here we use the parallel port (0x378).
+ to a hardware address, here we use the parallel port (0x378).
 
  This driver support no configuration strings so installing is easy:
  realtime: halcmd loadrt hal_skeleton
@@ -75,10 +75,10 @@
     information, go to www.linuxcnc.org.
 */
 
-#include "rtapi.h"		/* RTAPI realtime OS API */
-#include "rtapi_app.h"		/* RTAPI realtime module decls */
+#include <rtapi.h>		/* RTAPI realtime OS API */
+#include <rtapi_app.h>		/* RTAPI realtime module decls */
 
-#include "hal.h"		/* HAL public API decls */
+#include <hal.h>		/* HAL public API decls */
 
 /* If FASTIO is defined, uses outb() and inb() from <asm.io>,
    instead of rtapi_outb() and rtapi_inb() - the <asm.io> ones
@@ -109,7 +109,7 @@ RTAPI_MP_STRING(cfg, "config string"); */
 */
 
 typedef struct {
-    hal_u32_t *data_out;		/* ptrs for output */
+    hal_uint_t data_out;		/* ptrs for output */
 } skeleton_t;
 
 /* pointer to array of skeleton_t structs in shared memory, 1 per port */
@@ -137,7 +137,6 @@ static void write_port(void *arg, long period);
 
 int rtapi_app_main(void)
 {
-    char name[HAL_NAME_LEN + 1];
     int n, retval;
 
     /* only one port at the moment */
@@ -162,8 +161,8 @@ int rtapi_app_main(void)
     }
 
     /* STEP 3: export the pin(s) */
-    retval = hal_pin_u32_newf(HAL_IN, &(port_data_array->data_out),
-			     comp_id, "skeleton.%d.pin-%02d-out", n, 1);
+    retval = hal_pin_new_ui32(comp_id, HAL_IN, &(port_data_array->data_out),
+			     0, "skeleton.%d.pin-%02d-out", n, 1);
     if (retval < 0) {
 	rtapi_print_msg(RTAPI_MSG_ERR,
 	    "SKELETON: ERROR: port %d var export failed with err=%i\n", n,
@@ -173,9 +172,8 @@ int rtapi_app_main(void)
     }
 
     /* STEP 4: export write function */
-    rtapi_snprintf(name, sizeof(name), "skeleton.%d.write", n);
-    retval = hal_export_funct(name, write_port, &(port_data_array[n]), 0, 0,
-	comp_id);
+    retval = hal_export_functf(write_port, &(port_data_array[n]), 0, 0,
+	comp_id, "skeleton.%d.write", n);
     if (retval < 0) {
 	rtapi_print_msg(RTAPI_MSG_ERR,
 	    "SKELETON: ERROR: port %d write funct export failed\n", n);
@@ -204,7 +202,7 @@ static void write_port(void *arg, long period)
     unsigned char outdata;
     port = arg;
 
-    outdata = *(port->data_out) & 0xFF;
+    outdata = hal_get_ui32(port->data_out) & 0xFF;
     /* write it to the hardware */
     rtapi_outb(outdata, 0x378);
 }

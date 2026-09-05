@@ -1,13 +1,16 @@
 component flipflop "D type flip-flop";
-pin in bit data_ "data input";
-pin in bit clk "clock, rising edge writes data to out";
-pin in bit set "when true, force out true";
-pin in bit reset "when true, force out false; overrides set";
-pin io bit out "output";
+pin in bool data_ "data input";
+pin in bool clk "clock, rising edge writes data to out";
+pin in bool set "when true, force out true";
+pin in bool reset "when true, force out false; overrides set";
+pin io bool out "output";
+pin io bool out-not "inverted output";
 option data flipflop_data;
 
-function _ nofp;
+option period no;
+function _;
 license "GPL";
+author "John Kasunich";
 ;;
 
 typedef struct { int oldclk; } flipflop_data;
@@ -17,11 +20,13 @@ FUNCTION(_) {
 
     c = clk;
     if ( reset ) {
-	out = 0;
+        out_set(0);
+        out_not_set(1);
     } else if ( set ) {
-	out = 1;
+        out_set(1);
+        out_not_set(0);
     } else if ( c && ! data.oldclk ) {
-	out = data_;
+        out_not_set(!out_set(data_));
     }
     data.oldclk = c;
 }

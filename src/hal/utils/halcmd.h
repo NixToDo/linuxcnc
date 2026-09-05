@@ -2,7 +2,7 @@
  * Copyright (C) 2003 John Kasunich
  *                     <jmkasunich AT users DOT sourceforge DOT net>
  *
- *  Other contributers:
+ *  Other contributors:
  *                     Martin Kuhnle
  *                     <mkuhnle AT users DOT sourceforge DOT net>
  *                     Alex Joni
@@ -40,14 +40,17 @@
 #ifndef HALCMD_H
 #define HALCMD_H
 #include <stdio.h>
-#include "hal.h"
+#include <hal.h>
+
+RTAPI_BEGIN_DECLS
+
 extern int halcmd_startup(int quiet);
 extern void halcmd_shutdown();
-extern int halcmd_parse_cmd(char * tokens[]);
+extern int halcmd_parse_cmd(const char * tokens[]);
 extern int halcmd_parse_line(char * line);
 extern void halcmd_shutdown(void);
 extern int prompt_mode, echo_mode, errorcount, halcmd_done;
-extern int halcmd_preprocess_line ( char *line, char **tokens);
+extern int halcmd_preprocess_line (char *line, const char **tokens);
 
 void halcmd_info(const char *format,...) __attribute__((format(printf,1,2)));
 void halcmd_output(const char *format,...) __attribute__((format(printf,1,2)));
@@ -73,8 +76,30 @@ enum halcmd_argtype {
     A_TILDE = 0x800,         /* tilde-expand all arguments */
 };
 
-typedef int(*halcmd_func_t)(void);
 
+typedef int(*halcmd_func_v_t)(void);
+typedef int(*halcmd_func_cp_t)(const char *);
+typedef int(*halcmd_func_cpp_t)(const char **);
+typedef int(*halcmd_func_ccpp_t)(const char **);
+typedef int(*halcmd_func_cp_cp_t)(const char *, const char *);
+typedef int(*halcmd_func_ccp_cp_t)(const char *, const char *);
+typedef int(*halcmd_func_cp_cpp_t)(const char *, const char **);
+typedef int(*halcmd_func_cp_cp_cp_t)(const char *, const char *, const char *);
+typedef int(*halcmd_func_cp_cp_cpp_t)(const char *, const char *, const char **);
+typedef int(*halcmd_func_cp_cp_cp_cpp_t)(const char *, const char *, const char *, const char **);
+
+typedef union {
+	halcmd_func_v_t		v;
+	halcmd_func_cp_t	cp;
+	halcmd_func_cpp_t	cpp;
+	halcmd_func_ccpp_t	ccpp;
+	halcmd_func_cp_cp_t	cp_cp;
+	halcmd_func_ccp_cp_t	ccp_cp;
+	halcmd_func_cp_cpp_t	cp_cpp;
+	halcmd_func_cp_cp_cp_t	cp_cp_cp;
+	halcmd_func_cp_cp_cpp_t	cp_cp_cpp;
+	halcmd_func_cp_cp_cp_cpp_t cp_cp_cp_cpp;
+} halcmd_func_t;
 
 struct halcmd_command {
     const char *name;
@@ -85,10 +110,12 @@ struct halcmd_command {
 extern struct halcmd_command halcmd_commands[];
 extern int halcmd_ncommands;
 
-extern FILE *halcmd_inifile;
+extern const char *halcmd_inifile;
 
 #define MAX_TOK 32
 #define MAX_CMD_LEN 1024
 #define MAX_EXPECTED_SIGS 999
+
+RTAPI_END_DECLS
 
 #endif

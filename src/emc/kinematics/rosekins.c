@@ -16,13 +16,13 @@
   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#include "kinematics.h"
-#include "posemath.h"
-#include "hal.h"
-#include "rtapi.h"
-#include "rtapi_math.h"
-#include "rtapi_app.h"
+#include <rtapi.h>
+#include <rtapi_math.h>
+#include <rtapi_app.h>
+#include <hal.h>
+#include <kinematics.h>
 
+KINS_NOT_SWITCHABLE
 EXPORT_SYMBOL(kinematicsType);
 EXPORT_SYMBOL(kinematicsInverse);
 EXPORT_SYMBOL(kinematicsForward);
@@ -32,10 +32,10 @@ MODULE_LICENSE("GPL");
 #define hypot(a,b) (sqrt((a)*(a)+(b)*(b)))
 #endif
 
-struct haldata {
-    hal_float_t *revolutions;
-    hal_float_t *theta_degrees;
-    hal_float_t *bigtheta_degrees;
+static struct haldata {
+    hal_real_t revolutions;
+    hal_real_t theta_degrees;
+    hal_real_t bigtheta_degrees;
 } *haldata;
 
 int kinematicsForward(const double *joints,
@@ -43,6 +43,8 @@ int kinematicsForward(const double *joints,
                       const KINEMATICS_FORWARD_FLAGS * fflags,
                       KINEMATICS_INVERSE_FLAGS * iflags)
 {
+    (void)fflags;
+    (void)iflags;
     double radius,z,theta;
 
     radius = joints[0];
@@ -67,6 +69,8 @@ int kinematicsInverse(const EmcPose * pos,
                       const KINEMATICS_INVERSE_FLAGS * iflags,
                       KINEMATICS_FORWARD_FLAGS * fflags)
 {
+    (void)iflags;
+    (void)fflags;
 // There is a potential problem when accumulating bigtheta -- loss of
 // precision based on size of mantissa -- but in practice, it is probably ok
 
@@ -90,9 +94,9 @@ int kinematicsInverse(const EmcPose * pos,
     theta     = atan2(y,x);
     bigtheta  = theta + PM_2_PI * revolutions;
 
-    *(haldata->revolutions) = revolutions;
-    *(haldata->theta_degrees) = theta * TO_DEG;
-    *(haldata->bigtheta_degrees) = bigtheta * TO_DEG;
+    hal_set_real(haldata->revolutions, revolutions);
+    hal_set_real(haldata->theta_degrees, theta * TO_DEG);
+    hal_set_real(haldata->bigtheta_degrees, bigtheta * TO_DEG);
 
     joints[0] = hypot(x,y);
     joints[1] = z;
@@ -122,18 +126,20 @@ int rtapi_app_main(void) {
     comp_id = hal_init("rosekins");
     if(comp_id < 0) return comp_id;
 
-    haldata = hal_malloc(sizeof(struct haldata));
+    haldata = hal_malloc(sizeof(*haldata));
+    if(!haldata) { ans = -ENOMEM; goto error; }
 
-    if((ans = hal_pin_float_new("rosekins.revolutions",
-              HAL_OUT, &(haldata->revolutions), comp_id)) < 0) goto error;
-    if((ans = hal_pin_float_new("rosekins.theta_degrees",
-              HAL_OUT, &(haldata->theta_degrees), comp_id)) < 0) goto error;
-    if((ans = hal_pin_float_new("rosekins.bigtheta_degrees",
-              HAL_OUT, &(haldata->bigtheta_degrees), comp_id)) < 0) goto error;
+    if((ans = hal_pin_new_real(comp_id, HAL_OUT, &(haldata->revolutions), 0.0, "rosekins.revolutions")) < 0)
+        goto error;
+    if((ans = hal_pin_new_real(comp_id, HAL_OUT, &(haldata->theta_degrees), 0.0, "rosekins.theta_degrees")) < 0)
+        goto error;
+    if((ans = hal_pin_new_real(comp_id, HAL_OUT, &(haldata->bigtheta_degrees), 0.0, "rosekins.bigtheta_degrees")) < 0)
+        goto error;
 
     hal_ready(comp_id);
     return 0;
 
 error:
+    hal_exit(comp_id);
     return ans;
 }

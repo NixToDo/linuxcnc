@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 #   Copyright (c) 2017 Kurt Jacobson
 
@@ -21,7 +21,6 @@
 #  SOFTWARE.
 
 import re
-import time
 from copy import copy
 from logging import Formatter
 
@@ -29,35 +28,38 @@ PREFIX = '\033['
 SUFFIX = '\033[0m'
 
 COLORS = {
-    'black'  : 30,
-    'red'    : 31,
-    'green'  : 32,
-    'yellow' : 33,
-    'blue'   : 34,
+    'black': 30,
+    'red': 31,
+    'green': 32,
+    'yellow': 33,
+    'blue': 34,
     'magenta': 35,
-    'cyan'   : 36,
-    'white'  : 37,
-    'bgred'  : 41,
-    'bggrey' : 100
-    }
+    'cyan': 36,
+    'white': 37,
+    'bgred': 41,
+    'bggreen': 42,
+    'bgyellow': 43,
+    'bggrey': 100
+}
 
 MAPPING = {
-    'DEBUG'   : 'white',
-    'INFO'    : 'cyan',
-    'WARNING' : 'yellow',
-    'ERROR'   : 'red',
+    'VERBOSE': 'bggrey',
+    'DEBUG': 'blue',
+    'INFO': 'cyan',
+    'WARNING': 'yellow',
+    'ERROR': 'red',
     'CRITICAL': 'bgred',
 }
 
 
 # Returns `text` warped in ASCII escape codes to produce `color`
 def COLORIZE(text, color=None):
-    seq = COLORS.get(color, 37) # default to white
+    seq = COLORS.get(color, 37)  # default to white
     return '{0}{1}m{2}{3}'.format(PREFIX, seq, text, SUFFIX)
 
 
 # Matches only the first `color<text>` occurrence
-# ^(.*?)<([^)]+)> 
+# ^(.*?)<([^)]+)>
 
 # Matches all `color<text>` occurrences, both take the same number of steps
 # ([^<\s]+)<([^>]+)>
@@ -68,8 +70,8 @@ RE = re.compile(r'(\w+)<([^>]+)>')
 
 class ColoredFormatter(Formatter):
 
-    def __init__(self, patern):
-        Formatter.__init__(self, patern)
+    def __init__(self, pattern):
+        Formatter.__init__(self, pattern)
 
     # Override the Formatter's format method to add ASCII colors
     # to the levelname and any marked words in the log message.
@@ -94,10 +96,10 @@ class ColoredFormatter(Formatter):
     # version of the message with the tags removed for use by the file handler.
     def color_words(self, raw_msg):
         plain_msg = color_msg = raw_msg
-        if '<' in raw_msg: # If no tag don't try to match
-            iterater = RE.finditer(raw_msg)
-            if iterater:
-                for match in iterater:
+        if '<' in raw_msg:  # If no tag don't try to match
+            iterator = RE.finditer(raw_msg)
+            if iterator:
+                for match in iterator:
                     group = match.group()
                     color = match.group(1)
                     word = match.group(2)
@@ -107,7 +109,6 @@ class ColoredFormatter(Formatter):
                     plain_msg = plain_msg.replace(group, word)
 
         return plain_msg, color_msg
-
 
 
 # ----------------------- E X A M P L E -----------------------
@@ -146,4 +147,3 @@ if __name__ == '__main__':
         print(False + "True")
     except Exception as e:
         log.debug('That did not work!', exc_info=e)
-

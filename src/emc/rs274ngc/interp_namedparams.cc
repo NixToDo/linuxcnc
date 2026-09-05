@@ -1,3 +1,8 @@
+/*misnomer: _setup.current_pocket,selected_pocket
+**          These are indexes to sequential tooldata entries
+**          but the names are not changed due to frequent
+**          legacy usage in py files used for remapping
+*/
 /********************************************************************
 * Description: interp_namedparams.cc
 *
@@ -12,13 +17,15 @@
 *
 * Last change: Juli 2011
 ********************************************************************/
+
+#include "config.h"
+
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
 
-#include "py3c/py3c.h"
 #define BOOST_PYTHON_MAX_ARITY 4
-#include "python_plugin.hh"
+#include "pythonplugin/python_plugin.hh"
 #include <boost/python/dict.hpp>
 #include <boost/python/extract.hpp>
 #include <boost/python/list.hpp>
@@ -34,16 +41,19 @@ namespace bp = boost::python;
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sstream>
+#include <string>
 #include <map>
 
 #include "rs274ngc.hh"
 #include "rs274ngc_return.hh"
 #include "interp_internal.hh"
 #include "rs274ngc_interp.hh"
-#include "inifile.hh"
+#include <inifile.hh>
 
 // for HAL pin variables
-#include "hal.h"
+#include <hal.h>
+
+using namespace linuxcnc;
 
 enum predefined_named_parameters {
     NP_LINE,
@@ -88,6 +98,15 @@ enum predefined_named_parameters {
     NP_U,
     NP_V,
     NP_W,
+    NP_ABS_X,
+    NP_ABS_Y,
+    NP_ABS_Z,
+    NP_ABS_A,
+    NP_ABS_B,
+    NP_ABS_C,
+    NP_ABS_U,
+    NP_ABS_V,
+    NP_ABS_W,
     NP_VALUE,
     NP_CALL_LEVEL,
     NP_REMAP_LEVEL,
@@ -140,7 +159,7 @@ int Interp::read_named_parameter(
 				 char *line,   //!< string: line of RS274/NGC code being processed
 				 int *counter, //!< pointer to a counter for position on the line
 				 double *double_ptr,   //!< pointer to double to be read
-				 double *parameters,   //!< array of system parameters
+				 double * /*parameters*/,   //!< array of system parameters
 				 bool check_exists)    //!< test for existence, not value
 {
     static char name[] = "read_named_parameter";
@@ -177,121 +196,144 @@ int Interp::read_named_parameter(
 // if the variable is of the form '_ini[section]name', then treat it as
 // an inifile  variable. Lookup section/name and cache the value
 // as global and read-only.
-// the shortest possible ini variable is '_ini[s]n' or 8 chars long .
+// the shortest possible INI variable is '_ini[s]n' or 8 chars long .
 int Interp::fetch_ini_param( const char *nameBuf, int *status, double *value)
 {
-    char *s;
     *status = 0;
     int n = strlen(nameBuf);
 
-     if ((n > 7) &&
-	((s = (char *) strchr(&nameBuf[6],']')) != NULL)) {
-
-	IniFile inifile;
-	const char *iniFileName;
-	int retval;
-	int closeBracket = s - nameBuf;
-
-	if ((iniFileName = getenv("INI_FILE_NAME")) == NULL) {
-	    logNP("warning: referencing ini parameter '%s': no ini file",nameBuf);
-	    *status = 0;
-	    return INTERP_OK;
-	}
-	if (!inifile.Open(iniFileName)) {
-	    *status = 0;
-	    ERS(_("cant open ini file '%s'"), iniFileName);
-	}
-
-	char capName[LINELEN];
-
-	strncpy(capName, nameBuf, n);
-	capName[n] = '\0';
-	for (char *p = capName; *p != 0; p++)
-	    *p = toupper(*p);
-	capName[closeBracket] = '\0';
-
-	if ((retval = inifile.Find( value, &capName[closeBracket+1], &capName[5])) == 0) {
-	    *status = 1;
-	    inifile.Close();
-	} else {
-	    inifile.Close();
-	    *status = 0;
-	    ERS(_("Named ini parameter #<%s> not found in inifile '%s': error=0x%x"),
-		nameBuf, iniFileName, retval);
-	}
+    if(n < 8) {
+        return INTERP_OK;
     }
+
+    std::string sect = nameBuf + 5;  // skip the '_ini[' part
+    // Make it all upper case
+    for(auto &c : sect) {
+        c = toupper(c);
+    }
+    size_t i = sect.find(']');
+    if(std::string::npos == i) {
+        ERS(_("_ini expansion missing ']'"));
+        return INTERP_OK;
+    }
+    std::string var  = sect.substr(i+1);
+    sect.erase(i); // Remove everything from ']'and after
+
+    const char *iniFileName;
+    if ((iniFileName = getenv("INI_FILE_NAME")) == NULL) {
+        logNP("warning: referencing INI parameter '%s': no INI file", nameBuf);
+        return INTERP_OK;
+    }
+    IniFile inifile(iniFileName);
+    if (!inifile) {
+        ERS(_("can\'t open INI file '%s'"), iniFileName);
+        return INTERP_OK;
+    }
+
+    if (auto inival = inifile.findReal(var, sect)) {
+        *value = *inival;
+        *status = 1;
+    } else {
+        ERS(_("Named INI parameter #<%s> not found in INI file '%s'"), nameBuf, iniFileName);
+    }
+
     return INTERP_OK;
 }
 
 // if the variable is of the form '_hal[hal_name]', then treat it as
 // a HAL pin, signal or param. Lookup value, convert to float, and export as global and read-only.
 // do not cache.
-// the shortest possible ini variable is '_hal[x]' or 7 chars long .
+// the shortest possible HAL variable is '_hal[x]' or 7 chars long .
 int Interp::fetch_hal_param( const char *nameBuf, int *status, double *value)
 {
-    static int comp_id;
     int retval;
-    hal_type_t type = HAL_TYPE_UNINITIALIZED;
-    hal_data_u* ptr;
-    bool conn;
-    char hal_name[HAL_NAME_LEN];
+    int n = strlen(nameBuf);
 
     *status = 0;
-    if (!comp_id) {
-	char hal_comp[HAL_NAME_LEN];
-	snprintf(hal_comp, sizeof(hal_comp),"interp%d",getpid());
-	comp_id = hal_init(hal_comp); // manpage says: NULL ok - which fails miserably
-	CHKS(comp_id < 0,_("fetch_hal_param: hal_init(%s): %d"), hal_comp,comp_id);
-	CHKS((retval = hal_ready(comp_id)), _("fetch_hal_param: hal_ready(): %d"),retval);
+
+    if(n < 7) {
+        return INTERP_OK;
     }
-    char *s;
-    int n = strlen(nameBuf);
-    if ((n > 6) &&
-	((s = (char *) strchr(&nameBuf[5],']')) != NULL)) {
 
-	int closeBracket = s - nameBuf;
+    // Make sure we can query pins/params/signals
+    // Calling hal_lib_init() here would make it impossible for us to determine
+    // when to call hal_lib_exit() to satisfy the init/exit reference counting.
+    // Neither do we want to create a temporary component. The overhead is
+    // huge. An alternative would be wrapping this code in hal_lib_init() and
+    // hal_lib_exit(), but that also creates a large overhead.
+    //
+    // The old code just created a component (using a persistent static comp_id
+    // check in this function), but that never gets cleaned up, which is also
+    // bad. If the change should result in a program to fail the below test,
+    // then we should fix the program and not hack this library.
+    // Now it is the responsibility of the program using the rs274ngc library
+    // to attach to HAL shared memory before running programs that use this.
+    retval = hal_is_init();
+    CHKS(retval == 0, "fetch_hal_param: HAL is not initialized (hal_is_init() returned zero)");
 
-	strncpy(hal_name, &nameBuf[5], closeBracket);
-	hal_name[closeBracket - 5] = '\0';
-	if (nameBuf[closeBracket + 1]) {
-	    logOword("%s: trailing garbage after closing bracket", hal_name);
-	    *status = 0;
-	    ERS("%s: trailing garbage after closing bracket", nameBuf);
-	}
-	// the result of these lookups could be cached in the parameter struct, but I'm not sure
-	// this is a good idea - a removed pin/signal will not be noticed
-
-	// I dont think that's needed - no change in pins/sigs/params
-	// rtapi_mutex_get(&(hal_data->mutex)); 
-        // rtapi_mutex_give(&(hal_data->mutex));
-
-        if (hal_get_pin_value_by_name(hal_name, &type, &ptr, &conn) == 0) {
-            if (!conn)
-		logOword("%s: no signal connected", hal_name);
-	    goto assign;
-	}
-        if (hal_get_signal_value_by_name(hal_name, &type, &ptr, &conn) == 0) {
-	    if (!conn)
-		logOword("%s: signal has no writer", hal_name);
-	    goto assign;
-	}
-        if (hal_get_param_value_by_name(hal_name, &type, &ptr) == 0) {
-	    goto assign;
-	}
-	*status = 0;
-	ERS("Named hal parameter #<%s> not found", nameBuf);
+    hal_type_t type = HAL_TYPE_UNINITIALIZED;
+    hal_query_value_u qval;
+    std::string hal_name = nameBuf + 5;  // skip the '_hal[' part
+    size_t i = hal_name.find(']');
+    if(std::string::npos == i) {
+        ERS(_("_hal expansion missing ']'"));
+        return INTERP_OK;
     }
+    if(hal_name.size()-1 > i) {
+        logOword("%s: trailing garbage after closing bracket", hal_name.c_str());
+        *status = 0;
+        ERS(_("%s: trailing garbage after closing bracket"), nameBuf);
+    }
+    hal_name.erase(i); // Remove everything from ']'and after
+
+    // Retrieve the active value from the pin/signal/param (in that order)
+    hal_query_t q = {};
+    q.name = hal_name.c_str();
+    q.qtype = HAL_QTYPE_PIN;
+    if(0 == hal_get_p(&q, NULL, NULL)) {
+        // FIXME: It is not always logical to complain on an pin that is
+        // not attached to a signal. HAL_OUT pins should always give a real
+        // result. HAL_IO pins could be fine, but that depends on whether
+        // there has been written proper data on it yet.
+        if(!q.pp.signal)
+            logOword("%s: no signal connected", hal_name.c_str());
+        qval = q.pp.value;
+        type = q.pp.type;
+        goto assign;
+    }
+    q = {};
+    q.name = hal_name.c_str();
+    if(0 == hal_get_s(&q, NULL, NULL)) {
+        if(q.sig.writers <= 0)
+            logOword("%s: signal has no writer", hal_name.c_str());
+        qval = q.sig.value;
+        type = q.sig.type;
+        goto assign;
+    }
+    q = {};
+    q.name = hal_name.c_str();
+    q.qtype = HAL_QTYPE_PARAM;
+    if(0 == hal_get_p(&q, NULL, NULL)) {
+        qval = q.pp.value;
+        type = q.pp.type;
+        goto assign;
+    }
+    *status = 0;
+    ERS(_("Named hal parameter #<%s> not found"), nameBuf);
+
     return INTERP_OK;
 
     assign:
     switch (type) {
-    case HAL_BIT: *value = (double) (ptr->b); break;
-    case HAL_U32: *value = (double) (ptr->u); break;
-    case HAL_S32: *value = (double) (ptr->s); break;
-    case HAL_FLOAT: *value = (double) (ptr->f); break;
+    case HAL_BOOL: *value = (double)qval.b; break;
+    case HAL_U32:  *value = (double)qval.u; break;
+    case HAL_S32:  *value = (double)qval.s; break;
+    case HAL_UINT: *value = (double)qval.u; break;
+    case HAL_SINT: *value = (double)qval.s; break;
+    case HAL_REAL: *value = (double)qval.r; break;
     default: return -1;
     }
-    logOword("%s: value=%f", hal_name, *value);
+    logOword("%s: value=%f", hal_name.c_str(), *value);
     *status = 1;
     return INTERP_OK; 
 }
@@ -358,13 +400,13 @@ int Interp::find_named_param(
 	       "named param - pycall(%s):\n%s", nameBuf,
 	       python_plugin->last_exception().c_str());
 	  CHKS(retval.ptr() == Py_None, "Python namedparams.%s returns no value", nameBuf);
-      if (PyStr_Check(retval.ptr())) {
+      if (PyUnicode_Check(retval.ptr())) {
 	      // returning a string sets the interpreter error message and aborts
 	      *status = 0;
 	      char *msg = bp::extract<char *>(retval);
 	      ERS("%s", msg);
 	  }
-      if (PyInt_Check(retval.ptr())) { // widen
+      if (PyLong_Check(retval.ptr())) { // widen
 	      *value = (double) bp::extract<int>(retval);
 	      *status = 1;
 	      return INTERP_OK;
@@ -380,7 +422,7 @@ int Interp::find_named_param(
 	  Py_XDECREF(res_str);
 	  ERS("Python call %s.%s returned '%s' - expected double, int or string, got %s",
 	      NAMEDPARAMS_MODULE, nameBuf,
-          PyStr_AsString(res_str),
+          PyUnicode_AsUTF8(res_str),
 	      retval.ptr()->ob_type->tp_name);
       } else {
 	  *value = pv->value;
@@ -501,22 +543,22 @@ int Interp::lookup_named_param(const char *nameBuf,
 
     case NP_PLANE: // _plane
 	switch(_setup.plane) {
-	case CANON_PLANE_XY:
+	case CANON_PLANE::XY:
 	    *value = G_17;
 	    break;
-	case CANON_PLANE_XZ:
+	case CANON_PLANE::XZ:
 	    *value = G_18;
 	    break;
-	case CANON_PLANE_YZ:
+	case CANON_PLANE::YZ:
 	    *value = G_19;
 	    break;
-	case CANON_PLANE_UV:
+	case CANON_PLANE::UV:
 	    *value = G_17_1;
 	    break;
-	case CANON_PLANE_UW:
+	case CANON_PLANE::UW:
 	    *value = G_18_1;
 	    break;
-	case CANON_PLANE_VW:
+	case CANON_PLANE::VW:
 	    *value = G_19_1;
 	    break;
 	}
@@ -524,8 +566,8 @@ int Interp::lookup_named_param(const char *nameBuf,
 
     case NP_CCOMP: // _ccomp - cutter compensation
 	*value =
-	    (_setup.cutter_comp_side == RIGHT) ? G_42 :
-	(_setup.cutter_comp_side == LEFT) ? G_41 : G_40;
+	    (_setup.cutter_comp_side == CUTTER_COMP::RIGHT) ? G_42 :
+	(_setup.cutter_comp_side == CUTTER_COMP::LEFT) ? G_41 : G_40;
 	break;
 
     case NP_METRIC: // _metric
@@ -537,23 +579,23 @@ int Interp::lookup_named_param(const char *nameBuf,
 	break;
 
     case NP_ABSOLUTE: // _absolute - distance mode
-	*value = (_setup.distance_mode == MODE_ABSOLUTE);
+	*value = (_setup.distance_mode == DISTANCE_MODE::ABSOLUTE);
 	break;
 
     case NP_INCREMENTAL: // _incremental - distance mode
-	*value = (_setup.distance_mode == MODE_INCREMENTAL);
+	*value = (_setup.distance_mode == DISTANCE_MODE::INCREMENTAL);
 	break;
 
     case NP_INVERSE_TIME: // _inverse_time - feed mode
-	*value = (_setup.feed_mode == INVERSE_TIME);
+	*value = (_setup.feed_mode == FEED_MODE::INVERSE_TIME);
 	break;
 
     case NP_UNITS_PER_MINUTE: // _units_per_minute - feed mode
-	*value = (_setup.feed_mode == UNITS_PER_MINUTE);
+	*value = (_setup.feed_mode == FEED_MODE::UNITS_PER_MINUTE);
 	break;
 
     case NP_UNITS_PER_REV: // _units_per_rev - feed mode
-	*value = (_setup.feed_mode == UNITS_PER_REVOLUTION);
+	*value = (_setup.feed_mode == FEED_MODE::UNITS_PER_REVOLUTION);
 	break;
 
     case NP_COORD_SYSTEM: // _coord_system - 0-9
@@ -569,23 +611,23 @@ int Interp::lookup_named_param(const char *nameBuf,
 	break;
 
     case NP_RETRACT_R_PLANE: // _retract_r_plane - G98
-	*value = (_setup.retract_mode == R_PLANE);
+	*value = (_setup.retract_mode == RETRACT_MODE::R_PLANE);
 	break;
 
     case NP_RETRACT_OLD_Z: // _retract_old_z - G99
-	*value = (_setup.retract_mode == OLD_Z);
+	*value = (_setup.retract_mode == RETRACT_MODE::OLD_Z);
 	break;
 
     case NP_SPINDLE_RPM_MODE: // _spindle_rpm_mode G97 currently only reports for spindle 0
-	*value = (_setup.spindle_mode[0] == CONSTANT_RPM);
+	*value = (_setup.spindle_mode[0] == SPINDLE_MODE::CONSTANT_RPM);
 	break;
 
     case NP_SPINDLE_CSS_MODE: // _spindle_css_mode G96
-	*value = (_setup.spindle_mode[0] == CONSTANT_SURFACE);
+	*value = (_setup.spindle_mode[0] == SPINDLE_MODE::CONSTANT_SURFACE);
 	break;
 
     case NP_IJK_ABSOLUTE_MODE: //_ijk_absolute_mode - G90.1
-	*value = (_setup.ijk_distance_mode == MODE_ABSOLUTE);
+	*value = (_setup.ijk_distance_mode == DISTANCE_MODE::ABSOLUTE);
 	break;
 
     case NP_LATHE_DIAMETER_MODE: // _lathe_diameter_mode - G7
@@ -658,6 +700,10 @@ int Interp::lookup_named_param(const char *nameBuf,
 	break;
 
     case NP_CURRENT_POCKET:
+    if (_setup.current_pocket == -1) {
+	    *value = -1;
+	    break;
+    }
     if(_setup.random_toolchanger){//random changers already report the real pocket number
 	    *value = _setup.current_pocket;
     }
@@ -706,6 +752,60 @@ int Interp::lookup_named_param(const char *nameBuf,
 	*value = _setup.w_current;
 	break;
 
+    case NP_ABS_X:  // abs position
+        {
+            double x = _setup.current_x + _setup.axis_offset_x;
+            double y = _setup.current_y + _setup.axis_offset_y;
+            rotate(&x, &y, _setup.rotation_xy);
+	    *value = x + _setup.origin_offset_x + _setup.tool_offset.tran.x;
+        }
+	break;
+
+    case NP_ABS_Y:  // abs position
+        {
+            double x = _setup.current_x + _setup.axis_offset_x;
+            double y = _setup.current_y + _setup.axis_offset_y;
+            rotate(&x, &y, _setup.rotation_xy);
+	    *value = y + _setup.origin_offset_y + _setup.tool_offset.tran.y;
+        }
+	break;
+
+
+    case NP_ABS_Z:  // abs position
+	*value = _setup.current_z + _setup.axis_offset_z +
+                 _setup.origin_offset_z + _setup.tool_offset.tran.z;
+	break;
+
+    case NP_ABS_A:  // abs position
+	*value = _setup.AA_current + _setup.AA_axis_offset +
+                 _setup.AA_origin_offset + _setup.tool_offset.a;
+	break;
+
+    case NP_ABS_B:  // abs position
+	*value = _setup.BB_current + _setup.BB_axis_offset +
+                 _setup.BB_origin_offset + _setup.tool_offset.b;
+	break;
+
+    case NP_ABS_C:  // abs position
+	*value = _setup.CC_current + _setup.CC_axis_offset +
+                 _setup.CC_origin_offset + _setup.tool_offset.c;
+	break;
+
+    case NP_ABS_U:  // abs position
+	*value = _setup.u_current + _setup.u_axis_offset +
+                 _setup.u_origin_offset + _setup.tool_offset.u;
+	break;
+
+    case NP_ABS_V:  // abs position
+	*value = _setup.v_current + _setup.v_axis_offset +
+                 _setup.v_origin_offset + _setup.tool_offset.v;
+	break;
+
+    case NP_ABS_W:  // abs position
+	*value = _setup.w_current + _setup.w_axis_offset +
+                 _setup.w_origin_offset + _setup.tool_offset.w;
+	break;
+
 	// o-word subs may optionally have an
 	// expression after endsub and return
 	// this 'function return value' is accessible as '_value'
@@ -730,7 +830,6 @@ int Interp::lookup_named_param(const char *nameBuf,
 	extern int _task;  // zero in gcodemodule, 1 in milltask
 	*value = _task;
 	break;
-
 
     default:
 	ERS(_("BUG: lookup_named_param(%s): unhandled index=%fn"),
@@ -768,11 +867,15 @@ int Interp::init_named_parameters()
   const char *pkgversion = PACKAGE_VERSION;  //examples: 2.4.6, 2.5.0~pre
   const char *version_major = "_vmajor";// named_parameter name (use lower case)
   const char *version_minor = "_vminor";// named_parameter name (use lower case)
-  double vmajor=0.0, vminor=0.0;
+  const char *metric_machine = "_metric_machine";// named_parameter name (use lower case)
+  double vmajor=0.0, vminor=0.0, munits = 1.0;
   sscanf(pkgversion, "%lf%lf", &vmajor, &vminor);
 
   init_readonly_param(version_major,vmajor,0);
   init_readonly_param(version_minor,vminor,0);
+
+  munits = inicheck();
+  init_readonly_param(metric_machine,munits,0);
 
   // params tagged with PA_USE_LOOKUP will call the lookup_named_param()
   // method. The value is used as a index for the switch() statement.
@@ -783,7 +886,7 @@ int Interp::init_named_parameters()
   init_readonly_param("_line", NP_LINE, PA_USE_LOOKUP);
 
   // any of G1 G2 G3 G5.2 G73 G80 G82 G83 G86 G87 G88 G89
-  // value is number after 'G' mutiplied by 10 (10,20,30,52..)
+  // value is number after 'G' multiplied by 10 (10,20,30,52..)
 
   init_readonly_param("_motion_mode", NP_MOTION_MODE, PA_USE_LOOKUP);
 
@@ -878,6 +981,17 @@ int Interp::init_named_parameters()
   init_readonly_param("_v", NP_V, PA_USE_LOOKUP);
   init_readonly_param("_w", NP_W, PA_USE_LOOKUP);
 
+  // current abs position, does not include any offset
+  init_readonly_param("_abs_x", NP_ABS_X, PA_USE_LOOKUP);
+  init_readonly_param("_abs_y", NP_ABS_Y, PA_USE_LOOKUP);
+  init_readonly_param("_abs_z", NP_ABS_Z, PA_USE_LOOKUP);
+  init_readonly_param("_abs_a", NP_ABS_A, PA_USE_LOOKUP);
+  init_readonly_param("_abs_b", NP_ABS_B, PA_USE_LOOKUP);
+  init_readonly_param("_abs_c", NP_ABS_C, PA_USE_LOOKUP);
+  init_readonly_param("_abs_u", NP_ABS_U, PA_USE_LOOKUP);
+  init_readonly_param("_abs_v", NP_ABS_V, PA_USE_LOOKUP);
+  init_readonly_param("_abs_w", NP_ABS_W, PA_USE_LOOKUP);
+
   // last (optional) endsub/return value
   init_readonly_param("_value", NP_VALUE, PA_USE_LOOKUP);
 
@@ -892,4 +1006,28 @@ int Interp::init_named_parameters()
   init_readonly_param("_remap_level", NP_REMAP_LEVEL, PA_USE_LOOKUP);
 
   return INTERP_OK;
+}
+
+double Interp::inicheck()
+{
+    const char *filename;
+
+    if ((filename = getenv("INI_FILE_NAME")) == NULL) {
+        return -1.0;
+    }
+
+    IniFile inifile(filename);
+    if (!inifile) {
+        return -1.0;
+    }
+
+    if (auto inistring = inifile.findString("LINEAR_UNITS", "TRAJ")) {
+        if (*inistring == "inch") {
+            return 0.0;
+        } else {
+            return 1.0;
+        }
+    }
+
+    return -1.0;
 }

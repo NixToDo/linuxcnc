@@ -1,16 +1,19 @@
-component dbounce """alternative debounce component\n
-This component is similar to the \\fBdebounce\\fR component\n
-(man \\fBdebounce\\fR) but uses settable delay pins for each instance\n
-and supports \\fBcount\\fR= or \\fBnames\\fR= parameters\n
-(groups are not used)""";
+component dbounce """alternative debounce component""";
+description """
+This component is similar to the *debounce*(9) component but uses settable
+delay pins for each instance and supports *count*= or *names*= parameters
+(groups are not used)
+""";
 
-pin in  bit in;
-pin out bit out;
-pin in  u32 delay = 5;
+pin in  bool in;
+pin out bool out;
+pin in  ui32 delay = 5;
 
-variable int state;
-function _ nofp;
+variable unsigned state;
+option period no;
+function _;
 license "GPL";
+author "Dewey Garrett";
 ;;
 FUNCTION(_) {
 
@@ -21,7 +24,7 @@ FUNCTION(_) {
             state++;
         } else {
             /* yes, set output */
-            out = 1;
+            out_set(1);
         }
     } else {
         /* input false, is state at zero? */
@@ -30,7 +33,7 @@ FUNCTION(_) {
             state--;
         } else {
             /* yes, clear output */
-            out = 0;
+            out_set(0);
         }
     }
 }

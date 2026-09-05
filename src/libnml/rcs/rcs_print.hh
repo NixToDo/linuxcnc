@@ -14,16 +14,8 @@
 #ifndef RCS_PRNT_HH
 #define RCS_PRNT_HH
 
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <stdarg.h>		/* va_list */
 
-#ifdef __cplusplus
-}
-#endif
 #ifdef __cplusplus
 class LinkedList;
 
@@ -112,9 +104,9 @@ extern "C" {
 #define PRINT_CMS_DESTRUCTORS           0x00000010	/* 16 */
 #define PRINT_NML_CONSTRUCTORS          0x00000020	/* 32 */
 #define PRINT_NML_DESTRUCTORS           0x00000040	/* 64 */
-#define PRINT_COMMANDS_RECIEVED         0x00000100	/* 256 */
+#define PRINT_COMMANDS_RECEIVED         0x00000100	/* 256 */
 #define PRINT_COMMANDS_SENT             0x00000200	/* 512 */
-#define PRINT_STATUS_RECIEVED           0x00000400	/* 1024 */
+#define PRINT_STATUS_RECEIVED           0x00000400	/* 1024 */
 #define PRINT_STATUS_SENT               0x00000800	/* 2048 */
 #define PRINT_NODE_CYCLES               0x00001000	/* 4096 */
 #define PRINT_NODE_MISSED_CYCLES        0x00002000	/* 8192 */
@@ -135,7 +127,7 @@ extern "C" {
 #define PRINT_ALL_SOCKET_REQUESTS       0x10000000
 #define PRINT_EVERYTHING                0xFFFFFFFF	/* 4294967295 */
 #ifdef __cplusplus
-enum RCS_PRINT_DESTINATION_TYPE {
+enum RCS_PRINT_DESTINATION_TYPE : int {
 #else
 typedef enum {
 #endif
@@ -199,7 +191,58 @@ extern "C" {
 extern int max_rcs_errors_to_print;
 extern int rcs_errors_printed;
 
-extern char last_error_bufs[4][100];
+enum { error_buf_size = 256 };
+extern char last_error_bufs[4][error_buf_size];
 extern int last_error_buf_filled;
+
+#ifdef __cplusplus
+#include <type_traits>
+#include <cstdio>
+#include <cstring>
+
+//
+// nml_stracpy(dst,src) - Copy 'src' char buffer array to 'dst' char buffer array
+// nml_strxcpy(dst,src) - Copy 'src' char pointer to 'dst' char buffer array
+// nml_strxcat(dst,src) - Append 'src' char pointer to 'dst' char buffer array
+// nml_strlcpy(dst,src,size) - Print-copy 'src' char pointer to 'dst' char pointer
+// nml_strlcat(dst,src,size) - Print-append 'src' char pointer to 'dst' char pointer
+//
+static inline int nml_strlcpy(char *dst, const char *src, size_t dstsize) {
+    return std::snprintf(dst, dstsize, "%s", src);
+}
+
+static inline int nml_strlcat(char *dst, const char *src, size_t dstsize) {
+    size_t l = std::strlen(dst);
+    if(l >= dstsize)
+        return 0;
+    return std::snprintf(dst + l, dstsize - l, "%s", src);
+}
+
+#define nml_strxcpy(dst,src) do { \
+        static_assert(std::is_array<decltype(dst)>::value, "dst must be non-const array"); \
+        static_assert(sizeof((dst)[0]) == 1, "dst must be char array"); \
+        static_assert(sizeof((src)[0]) == 1, "dst must be char array"); \
+        nml_strlcpy((dst), (src), sizeof(dst)); \
+    } while(0)
+
+#define nml_stracpy(dst,src) do { \
+        static_assert(std::is_array<decltype(dst)>::value, "dst must be non-const array"); \
+        static_assert(std::is_array<decltype(src)>::value, "dst must be array"); \
+        static_assert(sizeof((dst)[0]) == 1, "dst must be char array"); \
+        static_assert(sizeof((src)[0]) == 1, "src must be char array"); \
+        size_t l = std::strlen(src); \
+	if(l >= sizeof(dst)) { \
+            std::memcpy((dst), (src), sizeof(dst)); \
+            (dst)[sizeof(dst) - 1] = 0; \
+        } else { \
+            std::memcpy((dst), (src), l + 1); \
+        } \
+    } while(0)
+
+#define nml_strxcat(dst,src) do { \
+        static_assert(std::is_array<decltype(dst)>::value, "dst must be non-const array"); \
+        nml_strlcat((dst), (src), sizeof(dst)); \
+    } while(0)
+#endif
 
 #endif

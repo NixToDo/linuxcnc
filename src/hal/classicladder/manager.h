@@ -13,14 +13,22 @@
 //    You should have received a copy of the GNU General Public License
 //    along with this program; if not, write to the Free Software
 //    Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#ifndef CLASSICLADDER_MANAGER_H
+#define CLASSICLADDER_MANAGER_H
+
 void InitSections( void );
 int SearchSubRoutineWithItsNumber( int SubRoutineNbrToFind );
-void SectionSelected( char * SectionName );
+int SearchSectionWithName( char * SectionNameToFind );
+void SetSectionSelected( int NumSec /*char * SectionName*/ );
 int AddSection( char * NewSectionName, int TypeLangageSection, int SubRoutineNbr );
+void ModifySectionProperties( int NumSec /*char * OriginalSectionName*/, char * NewSectionName );
 int NbrSectionsDefined( void );
 int VerifyIfSectionNameAlreadyExist( char * Name );
 int VerifyIfSubRoutineNumberExist( int SubRoutineNbr );
-void DelSection( char * SectionNameToErase );
-void SwapSections( char * SectionName1, char * SectionName2 );
+void DelSection( int NumSec /*char * SectionNameToErase*/ );
+int GetPrevNextSection( int RefSectionNbr, char NextSearch );
+void SwapSections( int SectionNbr1, int SectionNbr2 /*char * SectionName1, char * SectionName2*/ );
 int FindFreeSequentialPage( void );
 
+
+#endif

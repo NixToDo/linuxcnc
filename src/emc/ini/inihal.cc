@@ -18,12 +18,13 @@ You should have received a copy of the GNU General Public License
 along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 ----------------------------------------------------------------------*/
-#include "rcs_print.hh"
-#include "emc.hh"
-#include "emcglb.h"
+#include "libnml/rcs/rcs_print.hh"
+#include "nml_intf/emc.hh"
+#include "nml_intf/emcglb.h"
 #include <stdio.h>
-#include "hal.h"
-#include "rtapi.h"
+#include <hal.h>
+#include <rtapi.h>
+#include <rtapi_math.h>
 #include "inihal.hh"
 #include "iniaxis.hh"
 
@@ -35,19 +36,11 @@ static ptr_inihal_data *the_inihal_data;
 
 #define PREFIX "ini."
 #define EPSILON .00001
-#define CLOSE(a,b,eps) ((a)-(b) < +(eps) && (a)-(b) > -(eps))
 
 #define NEW(NAME) new_inihal_data.NAME
 
-#define CHANGED(NAME) \
-    ((old_inihal_data.NAME) - (new_inihal_data.NAME) > +(EPSILON)) \
-    || \
-    ((old_inihal_data.NAME) - (new_inihal_data.NAME) < -(EPSILON))
-
-#define CHANGED_IDX(NAME,IDX) \
-    ((old_inihal_data.NAME[IDX]) - (new_inihal_data.NAME[IDX]) > +(EPSILON)) \
-    || \
-    ((old_inihal_data.NAME[IDX]) - (new_inihal_data.NAME[IDX]) < -(EPSILON))
+#define CHANGED(NAME) (fabs((old_inihal_data.NAME) - (new_inihal_data.NAME)) > (EPSILON))
+#define CHANGED_IDX(NAME,IDX) (fabs((old_inihal_data.NAME[IDX]) - (new_inihal_data.NAME[IDX])) > (EPSILON))
 
 #define UPDATE(NAME) old_inihal_data.NAME = new_inihal_data.NAME
 
@@ -55,6 +48,9 @@ static ptr_inihal_data *the_inihal_data;
 
 #define SHOW_CHANGE(NAME) \
     fprintf(stderr,"Changed: "#NAME" %g-->%g\n",old_inihal_data.NAME, \
+                                                new_inihal_data.NAME);
+#define SHOW_CHANGE_INT(NAME) \
+    fprintf(stderr,"Changed: "#NAME" %d-->%d\n",old_inihal_data.NAME, \
                                                 new_inihal_data.NAME);
 #define SHOW_CHANGE_ARC_BLEND() \
     fprintf(stderr,"Changed: blend_enable:          %d-->%d\n"\
@@ -82,44 +78,46 @@ static ptr_inihal_data *the_inihal_data;
                                                         new_inihal_data.NAME[IDX]);
 #define MAKE_BIT_PIN(NAME,DIR) \
 do { \
-     retval = hal_pin_bit_newf(DIR,&(the_inihal_data->NAME),comp_id,PREFIX#NAME); \
+     int retval = hal_pin_new_bool(comp_id, DIR, &(the_inihal_data->NAME), 0, PREFIX#NAME); \
      if (retval < 0) return retval; \
    } while (0)
 
 #define MAKE_S32_PIN(NAME,DIR) \
 do { \
-     retval = hal_pin_s32_newf(DIR,&(the_inihal_data->NAME),comp_id,PREFIX#NAME); \
+     int retval = hal_pin_new_si32(comp_id, DIR, &(the_inihal_data->NAME), 0, PREFIX#NAME); \
      if (retval < 0) return retval; \
    } while (0)
 
 #define MAKE_S32_PIN_IDX(NAME,HALPIN_NAME,DIR,IDX) \
 do { \
-     retval = hal_pin_s32_newf(DIR,&(the_inihal_data->NAME[IDX]),\
-                               comp_id,PREFIX"%d."#HALPIN_NAME,IDX); \
+     int retval = hal_pin_new_si32(comp_id, DIR, &(the_inihal_data->NAME[IDX]),\
+                               0, PREFIX"%d."#HALPIN_NAME, IDX); \
      if (retval < 0) return retval; \
    } while (0)
 
 #define MAKE_FLOAT_PIN(NAME,DIR) \
 do { \
-     retval = hal_pin_float_newf(DIR,&(the_inihal_data->NAME),comp_id,PREFIX#NAME); \
+     int retval = hal_pin_new_real(comp_id, DIR, &(the_inihal_data->NAME), 0,PREFIX#NAME); \
      if (retval < 0) return retval; \
    } while (0)
 
 #define MAKE_FLOAT_PIN_IDX(NAME,HALPIN_NAME,DIR,IDX) \
 do {                        \
-     retval = hal_pin_float_newf(DIR,&(the_inihal_data->NAME[IDX]),\
-                                 comp_id,PREFIX"%d."#HALPIN_NAME,IDX); \
+     int retval = hal_pin_new_real(comp_id, DIR, &(the_inihal_data->NAME[IDX]),\
+                                 0.0, PREFIX"%d."#HALPIN_NAME, IDX); \
      if (retval < 0) return retval; \
    } while (0)
 
 #define MAKE_FLOAT_PIN_LETTER(NAME,HALPIN_NAME,DIR,IDX,LETTER) \
 do {                        \
-     retval = hal_pin_float_newf(DIR,&(the_inihal_data->NAME[IDX]),\
-                                 comp_id,PREFIX"%c."#HALPIN_NAME,LETTER); \
+     int retval = hal_pin_new_real(comp_id, DIR, &(the_inihal_data->NAME[IDX]),\
+                               0.0, PREFIX"%c."#HALPIN_NAME, LETTER); \
      if (retval < 0) return retval; \
    } while (0)
 
-#define INIT_PIN(NAME) *(the_inihal_data->NAME) = old_inihal_data.NAME;
+#define INIT_PIN_R(NAME) hal_set_real(the_inihal_data->NAME, old_inihal_data.NAME);
+#define INIT_PIN_S(NAME) hal_set_si32(the_inihal_data->NAME, old_inihal_data.NAME);
+#define INIT_PIN_B(NAME) hal_set_bool(the_inihal_data->NAME, old_inihal_data.NAME);
 
 int ini_hal_exit(void)
 {
@@ -130,8 +128,6 @@ int ini_hal_exit(void)
 
 int ini_hal_init(int numjoints)
 {
-    int retval;
-
     comp_id = hal_init("inihal");
     if (comp_id < 0) {
     rtapi_print_msg(RTAPI_MSG_ERR,
@@ -140,7 +136,7 @@ int ini_hal_init(int numjoints)
     }
 
     the_inihal_data = (ptr_inihal_data *) hal_malloc(sizeof(ptr_inihal_data));
-    if (the_inihal_data == 0) {
+    if (the_inihal_data == NULL) {
         rtapi_print_msg(RTAPI_MSG_ERR,
                        "ini_hal_init: ERROR: hal_malloc() failed\n");
         hal_exit(comp_id);
@@ -155,6 +151,7 @@ int ini_hal_init(int numjoints)
         MAKE_FLOAT_PIN_IDX(joint_max_limit,max_limit,HAL_IN,idx);
         MAKE_FLOAT_PIN_IDX(joint_max_velocity,max_velocity,HAL_IN,idx);
         MAKE_FLOAT_PIN_IDX(joint_max_acceleration,max_acceleration,HAL_IN,idx);
+        MAKE_FLOAT_PIN_IDX(joint_jerk,max_jerk,HAL_IN,idx);
         MAKE_FLOAT_PIN_IDX(joint_home,home,HAL_IN,idx);
         MAKE_FLOAT_PIN_IDX(joint_home_offset,home_offset,HAL_IN,idx);
         MAKE_S32_PIN_IDX(  joint_home_sequence,home_sequence,HAL_IN,idx);
@@ -165,12 +162,16 @@ int ini_hal_init(int numjoints)
         MAKE_FLOAT_PIN_LETTER(axis_max_limit,max_limit,HAL_IN,idx,letter);
         MAKE_FLOAT_PIN_LETTER(axis_max_velocity,max_velocity,HAL_IN,idx,letter);
         MAKE_FLOAT_PIN_LETTER(axis_max_acceleration,max_acceleration,HAL_IN,idx,letter);
+        MAKE_FLOAT_PIN_LETTER(axis_jerk,max_jerk,HAL_IN,idx,letter);
     }
 
     MAKE_FLOAT_PIN(traj_default_velocity,HAL_IN);
     MAKE_FLOAT_PIN(traj_max_velocity,HAL_IN);
     MAKE_FLOAT_PIN(traj_default_acceleration,HAL_IN);
     MAKE_FLOAT_PIN(traj_max_acceleration,HAL_IN);
+    MAKE_FLOAT_PIN(traj_max_jerk,HAL_IN);
+    MAKE_S32_PIN(traj_planner_type,HAL_IN);
+    MAKE_FLOAT_PIN(traj_scurve_peak_scale,HAL_IN);
 
     MAKE_BIT_PIN(traj_arc_blend_enable,HAL_IN);
     MAKE_BIT_PIN(traj_arc_blend_fallback_enable,HAL_IN);
@@ -185,35 +186,40 @@ int ini_hal_init(int numjoints)
 
 int ini_hal_init_pins(int numjoints)
 {
-    INIT_PIN(traj_default_velocity);
-    INIT_PIN(traj_max_velocity);
-    INIT_PIN(traj_default_acceleration);
-    INIT_PIN(traj_max_acceleration);
+    INIT_PIN_R(traj_default_velocity);
+    INIT_PIN_R(traj_max_velocity);
+    INIT_PIN_R(traj_default_acceleration);
+    INIT_PIN_R(traj_max_acceleration);
+    INIT_PIN_R(traj_max_jerk);
+    INIT_PIN_S(traj_planner_type);
+    INIT_PIN_R(traj_scurve_peak_scale);
 
-    INIT_PIN(traj_arc_blend_enable);
-    INIT_PIN(traj_arc_blend_fallback_enable);
-    INIT_PIN(traj_arc_blend_optimization_depth);
-    INIT_PIN(traj_arc_blend_gap_cycles);
-    INIT_PIN(traj_arc_blend_ramp_freq);
-    INIT_PIN(traj_arc_blend_tangent_kink_ratio);
+    INIT_PIN_B(traj_arc_blend_enable);
+    INIT_PIN_B(traj_arc_blend_fallback_enable);
+    INIT_PIN_S(traj_arc_blend_optimization_depth);
+    INIT_PIN_R(traj_arc_blend_gap_cycles);
+    INIT_PIN_R(traj_arc_blend_ramp_freq);
+    INIT_PIN_R(traj_arc_blend_tangent_kink_ratio);
 
     for (int idx = 0; idx < numjoints; idx++) {
-        INIT_PIN(joint_backlash[idx]);
-        INIT_PIN(joint_ferror[idx]);
-        INIT_PIN(joint_min_ferror[idx]);
-        INIT_PIN(joint_min_limit[idx]);
-        INIT_PIN(joint_max_limit[idx]);
-        INIT_PIN(joint_max_velocity[idx]);
-        INIT_PIN(joint_max_acceleration[idx]);
-        INIT_PIN(joint_home[idx]);
-        INIT_PIN(joint_home_offset[idx]);
-        INIT_PIN(joint_home_sequence[idx]);
+        INIT_PIN_R(joint_backlash[idx]);
+        INIT_PIN_R(joint_ferror[idx]);
+        INIT_PIN_R(joint_min_ferror[idx]);
+        INIT_PIN_R(joint_min_limit[idx]);
+        INIT_PIN_R(joint_max_limit[idx]);
+        INIT_PIN_R(joint_max_velocity[idx]);
+        INIT_PIN_R(joint_max_acceleration[idx]);
+        INIT_PIN_R(joint_jerk[idx]);
+        INIT_PIN_R(joint_home[idx]);
+        INIT_PIN_R(joint_home_offset[idx]);
+        INIT_PIN_S(joint_home_sequence[idx]);
     }
     for (int idx = 0; idx < EMCMOT_MAX_AXIS; idx++) {
-        INIT_PIN(axis_min_limit[idx]);
-        INIT_PIN(axis_max_limit[idx]);
-        INIT_PIN(axis_max_velocity[idx]);
-        INIT_PIN(axis_max_acceleration[idx]);
+        INIT_PIN_R(axis_min_limit[idx]);
+        INIT_PIN_R(axis_max_limit[idx]);
+        INIT_PIN_R(axis_max_velocity[idx]);
+        INIT_PIN_R(axis_max_acceleration[idx]);
+        INIT_PIN_R(axis_jerk[idx]);
     }
 
     return 0;
@@ -221,17 +227,38 @@ int ini_hal_init_pins(int numjoints)
 
 static void copy_hal_data(const ptr_inihal_data &i, value_inihal_data &j)
 {
-    int x;
-#define FIELD(t,f) j.f = (i.f)?*i.f:0;
-#define ARRAY(t,f,n) do { for (x = 0; x < n; x++) j.f[x] = (i.f[x])?*i.f[x]:0; } while (0);
+#define FIELD(t,f) do { \
+        if(i.f) { \
+            j.f = hal_get_##t(i.f); \
+        } \
+    } while(0);
+#define ARRAY(t,f,n) do { \
+        for (int x = 0; x < n; x++) { \
+            if(i.f[x]) { \
+                j.f[x] = hal_get_##t(i.f[x]); \
+            } \
+        } \
+    } while (0);
     HAL_FIELDS
 #undef FIELD
 #undef ARRAY
 } // copy_hal_data()
 
+// S-curve planner requires max jerk >= 1.0; when a HAL pin change forces
+// the planner back to trapezoidal, warn once instead of on every change.
+static void warn_planner_fallback_once(void)
+{
+    static bool warned = false;
+    if (!warned) {
+        rcs_print_error("S-curve planner (planner type 1) requires max jerk >= 1.0; "
+                        "using trapezoidal planner\n");
+        warned = true;
+    }
+}
+
 int check_ini_hal_items(int numjoints)
 {
-    value_inihal_data new_inihal_data_mutable;
+    value_inihal_data new_inihal_data_mutable = {};
     copy_hal_data(*the_inihal_data, new_inihal_data_mutable);
     const value_inihal_data &new_inihal_data = new_inihal_data_mutable;
 
@@ -266,6 +293,63 @@ int check_ini_hal_items(int numjoints)
         if (0 != emcTrajSetMaxAcceleration(NEW(traj_max_acceleration))) {
             if (emc_debug & EMC_DEBUG_CONFIG) {
                 rcs_print("check_ini_hal_items:bad return value from emcTrajSetMaxAcceleration\n");
+            }
+        }
+    }
+
+    if (CHANGED(traj_max_jerk)) {
+        if (debug) SHOW_CHANGE(traj_max_jerk)
+        UPDATE(traj_max_jerk);
+        if (0 != emcTrajSetMaxJerk(NEW(traj_max_jerk))) {
+            if (emc_debug & EMC_DEBUG_CONFIG) {
+                rcs_print("check_ini_hal_items:bad return value from emcTrajSetMaxJerk\n");
+            }
+        }
+        // Also update the current jerk to the new max value
+        if (0 != emcTrajSetJerk(NEW(traj_max_jerk))) {
+            if (emc_debug & EMC_DEBUG_CONFIG) {
+                rcs_print("check_ini_hal_items:bad return value from emcTrajSetJerk\n");
+            }
+        }
+        // Force planner type 0 if max_jerk < 1 (S-curve needs valid jerk)
+        if (NEW(traj_max_jerk) < 1.0) {
+            if (old_inihal_data.traj_planner_type == 1) {
+                warn_planner_fallback_once();
+            }
+            if (0 != emcTrajPlannerType(0)) {
+                if (emc_debug & EMC_DEBUG_CONFIG) {
+                    rcs_print("check_ini_hal_items:bad return value from emcTrajPlannerType\n");
+                }
+            }
+        }
+    }
+
+    if (CHANGED(traj_planner_type)) {
+        if (debug) SHOW_CHANGE_INT(traj_planner_type)
+        UPDATE(traj_planner_type);
+        // Only 0 and 1 are supported, set to 0 if invalid
+        // Also force planner type 0 if max_jerk < 1 (S-curve needs valid jerk)
+        int planner_type = NEW(traj_planner_type);
+        if (planner_type != 0 && planner_type != 1) {
+            planner_type = 0;
+        }
+        if (planner_type == 1 && NEW(traj_max_jerk) < 1.0) {
+            warn_planner_fallback_once();
+            planner_type = 0;
+        }
+        if (0 != emcTrajPlannerType(planner_type)) {
+            if (emc_debug & EMC_DEBUG_CONFIG) {
+                rcs_print("check_ini_hal_items:bad return value from emcTrajPlannerType\n");
+            }
+        }
+    }
+
+    if (CHANGED(traj_scurve_peak_scale)) {
+        if (debug) SHOW_CHANGE(traj_scurve_peak_scale)
+        UPDATE(traj_scurve_peak_scale);
+        if (0 != emcTrajSetScurvePeakScale(NEW(traj_scurve_peak_scale))) {
+            if (emc_debug & EMC_DEBUG_CONFIG) {
+                rcs_print("check_ini_hal_items:bad return value from emcTrajSetScurvePeakScale\n");
             }
         }
     }
@@ -340,6 +424,15 @@ int check_ini_hal_items(int numjoints)
             if (0 != emcJointSetMaxAcceleration(idx, NEW(joint_max_acceleration[idx]))) {
                 if (emc_debug & EMC_DEBUG_CONFIG) {
                     rcs_print_error("check_ini_hal_items:bad return from emcJointSetMaxAcceleration\n");
+                }
+            }
+        }
+        if (CHANGED_IDX(joint_jerk,idx) ) {
+            if (debug) SHOW_CHANGE_IDX(joint_jerk,idx);
+            UPDATE_IDX(joint_jerk,idx);
+            if (0 != emcJointSetMaxJerk(idx, NEW(joint_jerk[idx]))) {
+                if (emc_debug & EMC_DEBUG_CONFIG) {
+                    rcs_print_error("check_ini_hal_items:bad return from emcJointSetMaxJerk\n");
                 }
             }
         }
@@ -422,6 +515,15 @@ int check_ini_hal_items(int numjoints)
                   (    ext_offset_a_or_v_ratio[idx]) * NEW(axis_max_acceleration[idx]))) {
                 if (emc_debug & EMC_DEBUG_CONFIG) {
                     rcs_print_error("check_ini_hal_items:bad return from emcAxisSetMaxAcceleration\n");
+                }
+            }
+        }
+        if (CHANGED_IDX(axis_jerk,idx) ) {
+            if (debug) SHOW_CHANGE_IDX(axis_jerk,idx);
+            UPDATE_IDX(axis_jerk,idx);
+            if (0 != emcAxisSetMaxJerk(idx,NEW(axis_jerk[idx]))) {
+                if (emc_debug & EMC_DEBUG_CONFIG) {
+                    rcs_print_error("check_ini_hal_items:bad return from emcAxisSetMaxJerk\n");
                 }
             }
         }

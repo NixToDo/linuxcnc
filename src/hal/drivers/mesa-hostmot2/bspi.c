@@ -16,12 +16,8 @@
 //    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
 //
 
-#include <rtapi_slab.h>
-#include <rtapi_bool.h>
-#include "rtapi.h"
-#include "rtapi_string.h"
-#include "rtapi_math.h"
-#include "hal.h"
+#include <rtapi.h>
+#include <hal.h>
 #include "hostmot2.h"
 
 int hm2_bspi_parse_md(hostmot2_t *hm2, int md_index) 
@@ -75,8 +71,7 @@ int hm2_bspi_parse_md(hostmot2_t *hm2, int md_index)
         hm2->bspi.num_instances = hm2->config.num_bspis;
     }
     
-    hm2->bspi.instance = (hm2_bspi_instance_t *)hal_malloc(hm2->bspi.num_instances 
-                                                     * sizeof(hm2_bspi_instance_t));
+    hm2->bspi.instance = hal_malloc(hm2->bspi.num_instances * sizeof(*hm2->bspi.instance));
     if (hm2->bspi.instance == NULL) {
         HM2_ERR("out of memory!\n");
         r = -ENOMEM;
@@ -87,7 +82,7 @@ int hm2_bspi_parse_md(hostmot2_t *hm2, int md_index)
         hm2_bspi_instance_t *chan = &hm2->bspi.instance[i];
         chan->clock_freq = md->clock_freq;
         r = snprintf(chan->name, sizeof(chan->name), "%s.bspi.%01d", hm2->llio->name, i);
-        if (r >= sizeof(chan->name)) {r = -EINVAL ; goto fail0;}
+        if (r >= (int)sizeof(chan->name)) {r = -EINVAL ; goto fail0;}
         HM2_PRINT("created Buffered SPI function %s.\n", chan->name);
         chan->base_address = md->base_address + i * md->instance_stride;
         chan->register_stride = md->register_stride;
@@ -140,15 +135,20 @@ int hm2_tram_add_bspi_frame(char *name, int chan, rtapi_u32 **wbuff, rtapi_u32 *
     } else {
         HM2_ERR("SPI frame must have a write entry for channel (%i) on %s.\n", chan, name);
         return -1;
-    }    
+    }
+    bool will_echo = !(hm2->bspi.instance[i].cd[chan] & 0x80000000);
+    bool has_rbuff = rbuff != NULL;
+    if (will_echo != has_rbuff) {
+        HM2_ERR("SPI frame must have a read entry for channel (%i) on %s.\n", chan, name);
+        return -1;
+    }
     if (rbuff != NULL){
-        // Don't add a read entry for a no-echo channel
-        if(!(hm2->bspi.instance[i].cd[chan] & 0x80000000)) {
-            r = hm2_register_tram_read_region(hm2,hm2->bspi.instance[i].addr[0], sizeof(rtapi_u32),rbuff);
-            if (r < 0) {
-                HM2_ERR( "Failed to add TRAM read entry for %s\n", name);
-                return -1;
-            }
+        // Reading from addr[0] instead of addr[chan] is intentional
+        // here - all the channels share one receive FIFO.
+        r = hm2_register_tram_read_region(hm2,hm2->bspi.instance[i].addr[0], sizeof(rtapi_u32),rbuff);
+        if (r < 0) {
+            HM2_ERR( "Failed to add TRAM read entry for %s\n", name);
+            return -1;
         }
     }
     
@@ -172,6 +172,26 @@ int hm2_allocate_bspi_tram(char* name)
     }
     
     return 0;
+}
+
+EXPORT_SYMBOL_GPL(hm2_bspi_clear_fifo);
+int hm2_bspi_clear_fifo(char * name)
+{
+    hostmot2_t * hm2;
+    int i, r;
+
+    i = hm2_get_bspi(&hm2, name);
+    if (i < 0){
+        HM2_ERR_NO_LL("Can not find BSPI instance %s.\n", name);
+        return -1;
+    }
+    rtapi_u32 zero = 0;
+    r = hm2->llio->write(hm2->llio, hm2->bspi.instance[i].count_addr, &zero, sizeof(rtapi_u32));
+    if (r < 0) {
+        HM2_ERR("BSPI: hm2->llio->write failure %s\n", name);
+    }
+    
+    return r;
 }
 
 EXPORT_SYMBOL_GPL(hm2_bspi_write_chan);
@@ -327,6 +347,7 @@ int hm2_bspi_set_write_function(char *name, int (*func)(void *subdata), void *su
     
 void hm2_bspi_process_tram_read(hostmot2_t *hm2, long period)
 {
+    (void)period;
     int i, r;
     int (*func)(void *subdata);
     for (i = 0 ; i < hm2->bspi.num_instances ; i++ ){
@@ -342,6 +363,7 @@ void hm2_bspi_process_tram_read(hostmot2_t *hm2, long period)
 
 void hm2_bspi_prepare_tram_write(hostmot2_t *hm2, long period)
 {
+    (void)period;
     int i, r;
     int (*func)(void *subdata);
     for (i = 0 ; i < hm2->bspi.num_instances ; i++ ){
@@ -359,10 +381,12 @@ void hm2_bspi_prepare_tram_write(hostmot2_t *hm2, long period)
 
 void hm2_bspi_cleanup(hostmot2_t *hm2)
 {
+    (void)hm2;
 }
 
 void hm2_bspi_write(hostmot2_t *hm2)
 {
+    (void)hm2;
 }
 
 

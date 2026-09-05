@@ -14,32 +14,37 @@
 //    along with this program; if not, write to the Free Software
 //    Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
-#include "hal.h"
-#include "kinematics.h"
-#include "rtapi_math.h"
-#include "rtapi_app.h"
+#include <rtapi_math.h>
+#include <rtapi_app.h>
+#include <hal.h>
+#include <kinematics.h>
 
 #include "lineardeltakins-common.h"
 
-struct haldata
+static struct haldata
 {
-    hal_float_t *r, *l;
+    hal_real_t r;
+    hal_real_t l;
 } *haldata;
 
-int comp_id;
+static int comp_id;
 
 int kinematicsForward(const double * joints,
                       EmcPose * pos,
                       const KINEMATICS_FORWARD_FLAGS * fflags,
                       KINEMATICS_INVERSE_FLAGS * iflags) {
-    set_geometry(*haldata->r, *haldata->l);
+    (void)fflags;
+    (void)iflags;
+    set_geometry(hal_get_real(haldata->r), hal_get_real(haldata->l));
     return kinematics_forward(joints, pos);
 }
 
 int kinematicsInverse(const EmcPose *pos, double *joints,
         const KINEMATICS_INVERSE_FLAGS *iflags,
         KINEMATICS_FORWARD_FLAGS *fflags) {
-    set_geometry(*haldata->r, *haldata->l);
+    (void)iflags;
+    (void)fflags;
+    set_geometry(hal_get_real(haldata->r), hal_get_real(haldata->l));
     return kinematics_inverse(pos, joints);
 }
 
@@ -50,35 +55,24 @@ KINEMATICS_TYPE kinematicsType()
 
 int rtapi_app_main(void)
 {
-    int retval = 0;
+    int retval;
 
     comp_id = hal_init("lineardeltakins");
-    if(comp_id < 0) retval = comp_id;
+    if(comp_id < 0) return comp_id;
 
-    if(retval == 0)
-    {
-        haldata = hal_malloc(sizeof(struct haldata));
-        retval = !haldata;
-    }
+    haldata = hal_malloc(sizeof(*haldata));
+    if(!haldata) { retval = -ENOMEM; goto error; }
 
-    if(retval == 0)
-        retval = hal_pin_float_newf(HAL_IN, &haldata->r, comp_id,
-                "lineardeltakins.R");
-    if(retval == 0)
-        retval = hal_pin_float_newf(HAL_IN, &haldata->l, comp_id,
-                "lineardeltakins.L");
+    if((retval = hal_pin_new_real(comp_id, HAL_IN, &haldata->r, DELTA_RADIUS, "lineardeltakins.R")) < 0)
+        goto error;
+    if((retval = hal_pin_new_real(comp_id, HAL_IN, &haldata->l, DELTA_DIAGONAL_ROD, "lineardeltakins.L")) < 0)
+        goto error;
 
-    if(retval == 0)
-    {
-        *haldata->r = DELTA_RADIUS;
-        *haldata->l = DELTA_DIAGONAL_ROD;
-    }
+    hal_ready(comp_id);
+    return 0;
 
-    if(retval == 0)
-    {
-        hal_ready(comp_id);
-    }
-
+error:
+    hal_exit(comp_id);
     return retval;
 }
 
@@ -87,6 +81,7 @@ void rtapi_app_exit(void)
     hal_exit(comp_id);
 }
 
+KINS_NOT_SWITCHABLE
 EXPORT_SYMBOL(kinematicsType);
 EXPORT_SYMBOL(kinematicsForward);
 EXPORT_SYMBOL(kinematicsInverse);

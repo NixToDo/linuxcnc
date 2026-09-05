@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 # This file is from PyOpenGL-2.0.1.07.  That distribution's license is
 # """License :: OSI Approved :: BSD License""",
@@ -9,19 +9,17 @@
 # University of York, UK
 # 
 
-from minigl import *
+from OpenGL.GL import *
+from OpenGL.GLU import *
 import math
-import os,sys
+import os
 import _togl
 import glnav
+import itertools
 
-import sys
-if sys.version_info[0] == 3:
-    from tkinter import _default_root
-    from tkinter import *
-else:
-    from Tkinter import _default_root
-    from Tkinter import *
+from tkinter import _default_root
+from tkinter import *
+
 # Keith Junius <junius@chem.rug.nl> provided many changes to Togl
 TOGL_NORMAL = 1
 TOGL_OVERLAY = 2
@@ -125,7 +123,7 @@ class RawOpengl(Togl, Misc):
         # will call redraw recursively. 
         self.update_idletasks()
         self.tk.call(self._w, 'makecurrent')
-        _mode = glGetDoublev(GL_MATRIX_MODE)
+        _mode = glGetInteger(GL_MATRIX_MODE)
         try:
             glMatrixMode(GL_PROJECTION)
             glPushMatrix()
@@ -226,6 +224,28 @@ http://www.yorvic.york.ac.uk/~mjh/
         """Cause this Opengl widget to be the current destination for drawing."""
 
         self.tk.call(self._w, 'makecurrent')
+
+
+    def basic_lighting(self):
+        """\
+        Set up some basic lighting (single infinite light source).
+
+        Also switch on the depth buffer.
+
+        The fixed-function calls live here rather than in glnav because this
+        widget is the one that owns a compatibility context; glnav's base
+        method is the GL-free camera reset, invoked after the GL setup to keep
+        the legacy order (activate, GL state, camera reset)."""
+
+        self.activate()
+        glLightfv(GL_LIGHT0, GL_POSITION, (1, -1, 1, 0))
+        glLightfv(GL_LIGHT0, GL_AMBIENT, (.4, .4, .4, 1))
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, (.6, .6, .6, 1))
+        glEnable(GL_LIGHTING)
+        glEnable(GL_LIGHT0)
+        glDepthFunc(GL_LESS)
+        glEnable(GL_DEPTH_TEST)
+        super().basic_lighting()
 
 
     def tkHandlePick(self, event):
@@ -348,6 +368,8 @@ http://www.yorvic.york.ac.uk/~mjh/
                 self.xcenter, self.ycenter, self.zcenter,
                 0., 1., 0.)
             glMatrixMode(GL_MODELVIEW)
+
+        glLoadMatrixd(self.get_modelview_matrix().T)
     
         # Call objects redraw method.
         self.redraw()
@@ -382,8 +404,8 @@ http://www.yorvic.york.ac.uk/~mjh/
         self.activate()
 
     def zoomwheel(self, event):
-        if event.delta > 0: self.zoomin(event)
-        else: self.zoomout(event)
+        if event.delta > 0: self.zoomin()
+        else: self.zoomout()
 
     def tkStartZoom(self, event):
         self.startZoom(event.y)

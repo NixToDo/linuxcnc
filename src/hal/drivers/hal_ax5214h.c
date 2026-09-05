@@ -37,7 +37,7 @@
 
     The driver creates HAL pins and parameters for each port pin
     as follows:
-    Each physical output has a correspinding HAL pin, named
+    Each physical output has a corresponding HAL pin, named
     'ax5214.<boardnum>.out-<pinnum>', and a HAL parameter
     'ax5214.<boardnum>.out-<pinnum>-invert'.
     Each physical input has two corresponding HAL pins, named
@@ -87,10 +87,10 @@
     information, go to www.linuxcnc.org.
 */
 
-#include "rtapi_ctype.h"	/* isspace() */
-#include "rtapi.h"		/* RTAPI realtime OS API */
-#include "rtapi_app.h"		/* RTAPI realtime module decls */
-#include "hal.h"		/* HAL public API decls */
+#include <rtapi_ctype.h>	/* isspace() */
+#include <rtapi.h>		/* RTAPI realtime OS API */
+#include <rtapi_app.h>		/* RTAPI realtime module decls */
+#include <hal.h>		/* HAL public API decls */
 
 /* If FASTIO is defined, uses outb() and inb() from <asm.io>,
    instead of rtapi_outb() and rtapi_inb() - the <asm.io> ones
@@ -120,10 +120,10 @@ RTAPI_MP_STRING(cfg, "config string");
 */
 
 typedef struct {
-    hal_bit_t *data;		/* basic pin for input or output */
+    hal_bool_t data;		/* basic pin for input or output */
     union {
-	hal_bit_t *not;		/* pin for inverted data (input only) */
-	hal_bit_t invert;	/* param for inversion (output only) */
+	hal_bool_t not;		/* pin for inverted data (input only) */
+	hal_bool_t invert;	/* param for inversion (output only) */
 	} io;
 } io_pin_t;
 
@@ -191,7 +191,6 @@ int rtapi_app_main(void)
 {
     char *cp;
     char *argv[MAX_TOK];
-    char name[HAL_NAME_LEN + 1];
     int n, retval;
 
     /* test for config string */
@@ -235,22 +234,18 @@ int rtapi_app_main(void)
     }
     /* export functions for each board */
     for (n = 0; n < num_boards; n++) {
-	/* make read function name */
-	rtapi_snprintf(name, sizeof(name), "ax5214h.%d.read", n);
 	/* export read function */
-	retval = hal_export_funct(name, read_board, &(board_array[n]),
-	    0, 0, comp_id);
+	retval = hal_export_functf(read_board, &(board_array[n]),
+	    0, 0, comp_id, "ax5214h.%d.read", n);
 	if (retval != 0) {
 	    rtapi_print_msg(RTAPI_MSG_ERR,
 		"AX5214H: ERROR: port %d read funct export failed\n", n);
 	    hal_exit(comp_id);
 	    return -1;
 	}
-	/* make write function name */
-	rtapi_snprintf(name, sizeof(name), "ax5214h.%d.write", n);
 	/* export write function */
-	retval = hal_export_funct(name, write_board, &(board_array[n]),
-	    0, 0, comp_id);
+	retval = hal_export_functf(write_board, &(board_array[n]),
+	    0, 0, comp_id, "ax5214h.%d.write", n);
 	if (retval != 0) {
 	    rtapi_print_msg(RTAPI_MSG_ERR,
 		"AX5214H: ERROR: port %d write funct export failed\n", n);
@@ -300,12 +295,12 @@ static void split_input(unsigned char data, io_pin_t *dest, int num)
     for (b = 0 ; b < num ; b++ ) {
 	if ( data & mask ) {
 	    /* input high, which means FALSE (active low) */
-	    *(dest->data) = 0;
-	    *(dest->io.not) = 1;
+	    hal_set_bool(dest->data, 0);
+	    hal_set_bool(dest->io.not, 1);
 	} else {
 	    /* input low, which means TRUE */
-	    *(dest->data) = 1;
-	    *(dest->io.not) = 0;
+	    hal_set_bool(dest->data, 1);
+	    hal_set_bool(dest->io.not, 0);
 	}
 	mask <<= 1;
 	dest++;
@@ -366,12 +361,12 @@ unsigned char build_output(io_pin_t *src, int num)
     /* assemble output byte for data port from 'num' source variables */
     for (b = 0; b < num; b++) {
 	/* get the data, add to output byte */
-	if ( *(src->data) ) {
-	    if ( !(src->io.invert) ) {
+	if ( hal_get_bool(src->data) ) {
+	    if ( !hal_get_bool(src->io.invert) ) {
 		data |= mask;
 	    }
 	} else {
-	    if ( (src->io.invert) ) {
+	    if ( hal_get_bool(src->io.invert) ) {
 		data |= mask;
 	    }
 	}
@@ -649,17 +644,14 @@ static int export_input_pin(int boardnum, int pinnum, io_pin_t *pin)
     int retval;
 
     /* export read only HAL pin for input data */
-    retval = hal_pin_bit_newf(HAL_OUT, &(pin->data), comp_id,
+    retval = hal_pin_new_bool(comp_id, HAL_OUT, &(pin->data), 0,
 			      "ax5214h.%d.in-%02d", boardnum, pinnum);
     if (retval != 0) {
 	return retval;
     }
     /* export additional pin for inverted input data */
-    retval = hal_pin_bit_newf(HAL_OUT, &(pin->io.not), comp_id,
+    retval = hal_pin_new_bool(comp_id, HAL_OUT, &(pin->io.not), 1,
 			      "ax5214h.%d.in-%02d-not", boardnum, pinnum);
-    /* initialize HAL pins */
-    *(pin->data) = 0;
-    *(pin->io.not) = 1;
     return retval;
 }
 
@@ -668,16 +660,13 @@ static int export_output_pin(int boardnum, int pinnum, io_pin_t *pin)
     int retval;
 
     /* export read only HAL pin for output data */
-    retval = hal_pin_bit_newf(HAL_IN, &(pin->data), comp_id,
+    retval = hal_pin_new_bool(comp_id, HAL_IN, &(pin->data), 0,
 			      "ax5214h.%d.out-%02d", boardnum, pinnum);
     if (retval != 0) {
 	return retval;
     }
     /* export parameter for polarity */
-    retval = hal_param_bit_newf(HAL_RW, &(pin->io.invert), comp_id,
+    retval = hal_param_new_bool(comp_id, HAL_RW, &(pin->io.invert), 0,
 				"ax5214h.%d.out-%02d-invert", boardnum, pinnum);
-    /* initialize HAL pin and param */
-    *(pin->data) = 0;
-    pin->io.invert = 0;
     return retval;
 }

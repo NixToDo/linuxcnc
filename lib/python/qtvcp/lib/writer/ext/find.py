@@ -1,12 +1,12 @@
 
 
 
-from PyQt5 import QtWidgets
+from qtpy import QtWidgets
 #PYQT5 QTextEdit, QDialog, QPushButton, QRadioButton, QGridLayout
 
 
-from PyQt5 import QtGui, QtCore
-from PyQt5.QtCore import Qt
+from qtpy import QtGui, QtCore
+from qtpy.QtCore import Qt
 
 import re
 
@@ -91,7 +91,7 @@ class Find(QtWidgets.QDialog):
 
             else:
 
-                # Make the next search start from the begining again
+                # Make the next search start from the beginning again
                 self.lastStart = 0
                 
                 self.parent.text.moveCursor(QtGui.QTextCursor.End)

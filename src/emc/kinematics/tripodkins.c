@@ -62,8 +62,11 @@
   completely. So, the inverse flags are ignored.
  */
 
-#include "kinematics.h"             /* these decls */
-#include "rtapi_math.h"
+#include <rtapi.h>		/* RTAPI realtime OS API */
+#include <rtapi_app.h>		/* RTAPI realtime module decls */
+#include <rtapi_math.h>
+#include <hal.h>
+#include <kinematics.h>             /* these decls */
 
 /* ident tag */
 #ifndef __GNUC__
@@ -72,14 +75,11 @@
 #endif
 #endif
 
-#include "hal.h"
-struct haldata {
-    hal_float_t *bx, *cx, *cy;
-} *haldata = 0;
-
-#define Bx (*(haldata->bx))
-#define Cx (*(haldata->cx))
-#define Cy (*(haldata->cy))
+static struct haldata {
+    hal_real_t bx;
+    hal_real_t cx;
+    hal_real_t cy;
+} *haldata = NULL;
 
 #define sq(x) ((x)*(x))
 
@@ -128,6 +128,7 @@ int kinematicsForward(const double * joints,
                       const KINEMATICS_FORWARD_FLAGS * fflags,
                       KINEMATICS_INVERSE_FLAGS * iflags)
 {
+    (void)iflags;
 #define AD (joints[0])
 #define BD (joints[1])
 #define CD (joints[2])
@@ -136,6 +137,9 @@ int kinematicsForward(const double * joints,
 #define Dz (pos->tran.z)
   double P, Q, R;
   double s, t, u;
+  rtapi_real Bx = hal_get_real(haldata->bx);
+  rtapi_real Cx = hal_get_real(haldata->cx);
+  rtapi_real Cy = hal_get_real(haldata->cy);
 
   P = sq(AD);
   Q = sq(BD) - sq(Bx);
@@ -184,12 +188,16 @@ int kinematicsInverse(const EmcPose * pos,
                       const KINEMATICS_INVERSE_FLAGS * iflags,
                       KINEMATICS_FORWARD_FLAGS * fflags)
 {
+    (void)iflags;
 #define AD (joints[0])
 #define BD (joints[1])
 #define CD (joints[2])
 #define Dx (pos->tran.x)
 #define Dy (pos->tran.y)
 #define Dz (pos->tran.z)
+  rtapi_real Bx = hal_get_real(haldata->bx);
+  rtapi_real Cx = hal_get_real(haldata->cx);
+  rtapi_real Cy = hal_get_real(haldata->cy);
 
   AD = sqrt(sq(Dx) + sq(Dy) + sq(Dz));
   BD = sqrt(sq(Dx - Bx) + sq(Dy) + sq(Dz));
@@ -233,7 +241,7 @@ int main(int argc, char *argv[])
   char buffer[BUFFERLEN];
   char cmd[BUFFERLEN];
   EmcPose pos, vel;
-  double joints[3], jointvels[3];
+  double joints[3]={0.0,0.0,0.0}, jointvels[3]={0.0,0.0,0.0};
   char inverse;
   char flags;
   KINEMATICS_FORWARD_FLAGS fflags;
@@ -261,7 +269,7 @@ int main(int argc, char *argv[])
     if (NULL == fgets(buffer, BUFFERLEN, stdin)) {
       break;
     }
-    if (1 != sscanf(buffer, "%s", cmd)) {
+    if (1 != sscanf(buffer, "%255s", cmd)) {
       continue;
     }
 
@@ -277,7 +285,7 @@ int main(int argc, char *argv[])
       continue;
     }
     if (! strcmp(cmd, "ff")) {
-      if (1 != sscanf(buffer, "%*s %d", &fflags)) {
+      if (1 != sscanf(buffer, "%*s %lu", &fflags)) {
 	printf("need forward flag\n");
       }
       continue;
@@ -306,7 +314,7 @@ int main(int argc, char *argv[])
     }
     else {			/* forward kins */
       if (flags) {
-	if (4 != sscanf(buffer, "%lf %lf %lf %d", 
+	if (4 != sscanf(buffer, "%lf %lf %lf %lu",
 			&joints[0],
 			&joints[1],
 			&joints[2],
@@ -344,10 +352,7 @@ int main(int argc, char *argv[])
 
 #endif /* MAIN */
 
-#include "rtapi.h"		/* RTAPI realtime OS API */
-#include "rtapi_app.h"		/* RTAPI realtime module decls */
-#include "hal.h"
-
+KINS_NOT_SWITCHABLE
 EXPORT_SYMBOL(kinematicsType);
 EXPORT_SYMBOL(kinematicsForward);
 EXPORT_SYMBOL(kinematicsInverse);
@@ -356,7 +361,7 @@ MODULE_LICENSE("GPL");
 
 
 
-int comp_id;
+static int comp_id;
 int rtapi_app_main(void) {
     int res = 0;
 
@@ -366,11 +371,10 @@ int rtapi_app_main(void) {
     haldata = hal_malloc(sizeof(struct haldata));
     if(!haldata) goto error;
 
-    if((res = hal_pin_float_new("tripodkins.Bx", HAL_IO, &(haldata->bx), comp_id)) < 0) goto error;
-    if((res = hal_pin_float_new("tripodkins.Cx", HAL_IO, &(haldata->cx), comp_id)) < 0) goto error;
-    if((res = hal_pin_float_new("tripodkins.Cy", HAL_IO, &(haldata->cy), comp_id)) < 0) goto error;
+    if((res = hal_pin_new_real(comp_id, HAL_IO, &(haldata->bx), 1.0, "tripodkins.Bx")) < 0) goto error;
+    if((res = hal_pin_new_real(comp_id, HAL_IO, &(haldata->cx), 1.0, "tripodkins.Cx")) < 0) goto error;
+    if((res = hal_pin_new_real(comp_id, HAL_IO, &(haldata->cy), 1.0, "tripodkins.Cy")) < 0) goto error;
 
-    Bx = Cx = Cy = 1.0;
     hal_ready(comp_id);
     return 0;
 

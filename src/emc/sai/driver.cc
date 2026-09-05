@@ -18,13 +18,12 @@
 *
 ********************************************************************/
 
-#include "rs274ngc.hh"
-#include "rs274ngc_interp.hh"
-#include "rs274ngc_return.hh"
-#include "inifile.hh"		// INIFILE
-#include "canon.hh"		// _parameter_file_name
+#include "rs274ngc/rs274ngc.hh"
+#include "rs274ngc/rs274ngc_interp.hh"
+#include "rs274ngc/rs274ngc_return.hh"
+#include <inifile.hh>
+#include "nml_intf/canon.hh"		// _parameter_file_name
 #include "config.h"		// LINELEN
-#include "tool_parse.h"
 #include <stdio.h>    /* gets, etc. */
 #include <stdlib.h>   /* exit       */
 #include <string.h>   /* strcpy     */
@@ -32,18 +31,20 @@
 #include <stdarg.h>
 #include <string>
 
-#include <readline/readline.h>
-#include <readline/history.h>
+#include <editline/readline.h>
+#include <histedit.h>
 #include <glob.h>
 #include <wordexp.h>
-#include <rtapi_string.h>
 
-#include <saicanon.hh>
+#include "saicanon.hh"
+#include "tooldata/tooldata.hh"
+
+using namespace linuxcnc;
 
 InterpBase *pinterp;
 #define interp_new (*pinterp)
 const char *prompt = "READ => ";
-const char *history = "~/.rs274";
+const char *histfile = "~/.rs274";
 #define RS274_HISTORY "RS274_HISTORY"
 
 #define active_settings  interp_new.active_settings
@@ -137,15 +138,15 @@ void initialize_readline ()
     rl_readline_name = "rs274";
  
     if ((s = getenv(RS274_HISTORY)))
-	history = s;
+	histfile = s;
     // tilde-expand 
-    if (wordexp(history, &p, WRDE_SHOWERR|WRDE_UNDEF )) {
+    if (wordexp(histfile, &p, WRDE_SHOWERR|WRDE_UNDEF )) {
 	perror("wordexp");
     } else {
-	history = strdup(p.we_wordv[0]);
+	histfile = strdup(p.we_wordv[0]);
     }
-    if (history)
-	read_history(history);
+    if (histfile)
+	read_history(histfile);
 }
 
 /***********************************************************************/
@@ -186,8 +187,8 @@ int interpret_from_keyboard(  /* ARGUMENTS                 */
 	{
 	    line = readline ( prompt);
 	    if (!line || strcmp (line, "quit") == 0) {
-		if (history)
-		    write_history(history);
+		if (histfile)
+		    write_history(histfile);
 		return 0;
 	    }
 	    if (*line)
@@ -315,7 +316,7 @@ int interpret_from_file( /* ARGUMENTS                  */
 Returned Value: int
   Returns 0 for success, nonzero for failure.  Failures can be caused by:
   1. The file named by the user cannot be opened.
-  2. Any error detected by loadToolTable()
+  2. Any error detected by tooldata_load()
 
 Side Effects:
   Values in the tool table of the machine setup are changed,
@@ -337,7 +338,8 @@ int read_tool_file(  /* ARGUMENTS         */
       tool_file_name = buffer;
     }
 
-  return loadToolTable(tool_file_name, _sai._tools, 0, 0);
+  // no toolTable[] param used
+  return tooldata_load(tool_file_name);
 }
 
 /************************************************************************/
@@ -559,8 +561,42 @@ int main (int argc, char ** argv)
   print_stack = OFF;
   tool_flag = 0;
   SET_PARAMETER_FILE_NAME(default_name);
-  _outfile = stdout; /* may be reset below */
   go_flag = 0;
+
+#ifdef TOOL_NML //{
+  tool_nml_register((CANON_TOOL_TABLE*)& _sai._tools);
+#else //}{
+  const int random_toolchanger = 0;
+  // sai gets its OWN mmap. tool_mmap_creator() opens the file O_TRUNC, and it
+  // runs before getopt() below, so every rs274 invocation -- including --help,
+  // and including one given -t -- emptied $HOME/.tool.mmap. That file is the
+  // live tool table, shared MAP_SHARED with io/milltask/halui, so an offline
+  // parse silently replaced the tool table of a running machine.
+  //
+  // mkstemp(), not a name built from the pid: TMPDIR is world-writable and a
+  // pid is guessable, so a predictable name can be pre-created as a symlink
+  // and the victim's rs274 then truncates the attacker's chosen file.
+  // mkstemp() creates it atomically with O_EXCL and mode 0600.
+  char sai_mmap_fname[LINELEN];
+  const char *tmpdir = getenv("TMPDIR");
+  if (!tmpdir || !*tmpdir) tmpdir = "/tmp";
+  snprintf(sai_mmap_fname,sizeof(sai_mmap_fname),
+           "%s/rs274.tool.mmap.XXXXXX",tmpdir);
+  int sai_fd = mkstemp(sai_mmap_fname);
+  if (sai_fd < 0) {
+      perror("rs274: mkstemp for the tool mmap failed");
+      exit(EXIT_FAILURE);
+  }
+  close(sai_fd);   // tool_mmap_creator() opens it by name; O_NOFOLLOW guards
+                   // the gap, and the file already exists and is ours
+  tool_mmap_set_fname(sai_mmap_fname);
+  tool_mmap_creator((EMC_TOOL_STAT*)NULL,random_toolchanger);
+  atexit(tool_mmap_close);  // tool_mmap_close() unlinks the file
+  /* Notes:
+  **   1) sai does not use toolInSpindle,pocketPrepped
+  **   2) sai does not distinguish changer type
+  */
+#endif //}
 
   while(1) {
       int c = getopt(argc, argv, "p:t:v:bsn:gi:l:T");
@@ -598,7 +634,7 @@ usage:
             "    -b: Toggle the 'block delete' flag (default: OFF)\n"
             "    -s: Toggle the 'print stack' flag (default: OFF)\n"
             "    -g: Toggle the 'go (batch mode)' flag (default: OFF)\n"
-            "    -i: specify the .ini file (default: no ini file)\n"
+            "    -i: specify the INI file (default: no INI file)\n"
             "    -T: call task_init()\n"
             "    -l: specify the log_level (default: -1)\n"
             , argv[0]);
@@ -662,7 +698,19 @@ usage:
           exit(1);
         }
     }
-  if (inifile!= 0) {
+  _sai._external_length_units =  0.03937007874016;
+  if (inifile!= NULL) {
+      IniFile ini(inifile);
+      if (!ini) {
+        fprintf(stderr, "could not open supplied INI file %s\n", inifile);
+        exit(1);
+      }
+
+      if (auto inistring = ini.findString("LINEAR_UNITS", "TRAJ")) {
+          if (*inistring == "mm") {
+             _sai._external_length_units = 1.0;
+          }
+      }
       setenv("INI_FILE_NAME",inifile,1);
   } else
       unsetenv("INI_FILE_NAME");
@@ -703,13 +751,9 @@ usage:
 
 /***********************************************************************/
 
-int  emcOperatorError(int id, const char *fmt, ...)
+int  emcOperatorError(const char *fmt, ...)
 {
     va_list ap;
-
-    if (id)
-	fprintf(stderr,"[%d] ", id);
-
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);

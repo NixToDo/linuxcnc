@@ -3,7 +3,7 @@
 *   Implements LOCMEM which is a derived class of CMS that serves
 *   primarily to provide addresses that match when matching buffer
 *   names are passed to the constructor. It is useful in allowing
-*   control modules to use the same inteface to communicate as would
+*   control modules to use the same interface to communicate as would
 *   be required if they were not running in the same process even
 *   though to use LOCMEM they must be.
 *
@@ -19,21 +19,13 @@
 ********************************************************************/
 
 #include "locmem.hh"		// class LOCMEM
-#include "cms.hh"		// class CMS
-#include "linklist.hh"		// class LinkedList
-#include "rcs_print.hh"		// rcs_print_error()
-#include <rtapi_string.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include "libnml/cms/cms.hh"		// class CMS
+#include "libnml/linklist/linklist.hh"		// class LinkedList
+#include "libnml/rcs/rcs_print.hh"		// rcs_print_error()
 
 #include <stdlib.h>		// malloc()
 #include <string.h>		// strcpy(), strcmp()
 
-#ifdef __cplusplus
-}
-#endif
 LinkedList *LOCMEM::buffers_list = (LinkedList *) NULL;
 
 LOCMEM::LOCMEM(const char *bufline, const char *procline, int set_to_server,
@@ -60,13 +52,13 @@ LOCMEM::LOCMEM(const char *bufline, const char *procline, int set_to_server,
 	}
 	my_node = new BUFFERS_LIST_NODE;
 	lm_addr = my_node->addr = malloc(size);
-	if (my_node == NULL || lm_addr == NULL) {
+	if (lm_addr == NULL) {
 	    rcs_print_error("Can't malloc needed space.\n");
 	    status = CMS_CREATE_ERROR;
 	    return;
 	}
 	my_node->size = size;
-	rtapi_strxcpy(my_node->name, BufferName);
+	nml_stracpy(my_node->name, BufferName);
 	memset(my_node->addr, 0, size);
 	buffer_id = buffers_list->store_at_tail(my_node, sizeof(my_node), 0);
 	return;

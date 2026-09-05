@@ -1,0 +1,36 @@
+:manvolnum: 3
+
+= hal_set_lock(3)
+
+== NAME
+
+hal_set_lock, hal_get_lock - Set or get the HAL lock level
+
+== SYNOPSIS
+
+[source,c]
+----
+#include <hal.h>
+
+int hal_set_lock(unsigned char lock_type);
+int hal_get_lock();
+----
+
+== ARGUMENTS
+
+lock_type::
+  The desired lock type, which may be a bitwise combination of:
++
+* `HAL_LOCK_LOAD` - Lock creating new pins, params and functions.
+* `HAL_LOCK_CONFIG` - Lock creating or altering threads.
+* `HAL_LOCK_PARAMS` - Lock altering parameters (only partly functional).
+* `HAL_LOCK_RUN` - Lock starting/stopping threads.
+* `HAL_LOCK_NONE` - locks nothing (unlocks all).
+* `HAL_LOCK_ALL` - Lock everything.
+
+== RETURN VALUE
+
+Function *hal_set_lock()* returns zero (0) on success or *-EFAULT* if HAL is not initialized.
+
+Function *hal_get_lock()* returns the current HAL lock level.
+If HAL is not initialized, *hal_get_lock()* returns `HAL_LOCK_ALL`.

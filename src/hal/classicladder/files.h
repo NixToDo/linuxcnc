@@ -13,6 +13,13 @@
 //    You should have received a copy of the GNU General Public License
 //    along with this program; if not, write to the Free Software
 //    Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#ifndef CLASSICLADDER_FILES_H
+#define CLASSICLADDER_FILES_H
+
+#include "classicladder.h"
+
+#include <stdio.h>		// FILE
+
 #ifndef S_LINE
 //#define S_LINE "<!--"
 //#define E_LINE "-->"
@@ -56,8 +63,13 @@ char LoadSymbols(char * FileName);
 char SaveSymbols(char * FileName);
 char LoadGeneralParameters(char * FileName);
 char SaveGeneralParameters(char * FileName);
+////XXX Function not used in LinuxCNC
+//char LoadConfigEventsLog(char * FileName);
+//char SaveConfigEventsLog(char * FileName);
 
 void LoadAllLadderDatas(char * DatasDirectory);
 void SaveAllLadderDatas(char * DatasDirectory);
 
 void CleanTmpLadderDirectory( char DestroyDir );
+
+#endif

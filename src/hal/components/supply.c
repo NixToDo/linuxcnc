@@ -44,9 +44,9 @@
     information, go to www.linuxcnc.org.
 */
 
-#include "rtapi.h"		/* RTAPI realtime OS API */
-#include "rtapi_app.h"		/* RTAPI realtime module decls */
-#include "hal.h"		/* HAL public API decls */
+#include <rtapi.h>		/* RTAPI realtime OS API */
+#include <rtapi_app.h>		/* RTAPI realtime module decls */
+#include <hal.h>		/* HAL public API decls */
 
 /* module information */
 MODULE_AUTHOR("Matt Shaver");
@@ -63,12 +63,12 @@ RTAPI_MP_INT(num_chan, "number of channels");
 */
 
 typedef struct {
-    hal_bit_t *q;		/* pin: q output of simulated flip-flop */
-    hal_bit_t *_q;		/* pin: /q output of simulated flip-flop */
-    hal_float_t *variable;	/* pin: output set by param "value" */
-    hal_float_t *_variable;	/* pin: output set by param "value" * -1.0 */
-    hal_bit_t *d;		/* pin: d input to simulated flip-flop */
-    hal_float_t *value;		/* pin: value of float pin "variable" */
+    hal_bool_t q;		/* pin: q output of simulated flip-flop */
+    hal_bool_t _q;		/* pin: /q output of simulated flip-flop */
+    hal_real_t variable;	/* pin: output set by param "value" */
+    hal_real_t _variable;	/* pin: output set by param "value" * -1.0 */
+    hal_bool_t d;		/* pin: d input to simulated flip-flop */
+    hal_real_t value;		/* pin: value of float pin "variable" */
 } hal_supply_t;
 
 /* pointer to supply_t struct */
@@ -140,15 +140,17 @@ void rtapi_app_exit(void)
 
 static void update_supply(void *arg, long l)
 {
-    hal_supply_t *supply;
-
+    (void)l;
     /* point to the data */
-    supply = arg;
+    hal_supply_t *supply = arg;
+
     /* set pin = param */
-    *(supply->q) = *(supply->d);
-    *(supply->_q) = !(*(supply->d));
-    *(supply->variable) = *(supply->value);
-    *(supply->_variable) = *(supply->value) * -1.0;
+    rtapi_bool d = hal_get_bool(supply->d);
+    hal_set_bool(supply->q, d);
+    hal_set_bool(supply->_q, !d);
+    rtapi_real value = hal_get_real(supply->value);
+    hal_set_real(supply->variable, value);
+    hal_set_real(supply->_variable, value * -1.0);
     /* done */
 }
 
@@ -159,46 +161,37 @@ static void update_supply(void *arg, long l)
 static int export_supply(int num, hal_supply_t * addr)
 {
     int retval;
-    char buf[HAL_NAME_LEN + 1];
 
     /* export pins */
-    retval = hal_pin_bit_newf(HAL_OUT, &(addr->q), comp_id, "supply.%d.q", num);
+    retval = hal_pin_new_bool(comp_id, HAL_OUT, &(addr->q), 0, "supply.%d.q", num);
     if (retval != 0) {
 	return retval;
     }
-    retval = hal_pin_bit_newf(HAL_OUT, &(addr->_q), comp_id, "supply.%d._q", num);
+    retval = hal_pin_new_bool(comp_id, HAL_OUT, &(addr->_q), 1, "supply.%d._q", num);
     if (retval != 0) {
 	return retval;
     }
-    retval = hal_pin_float_newf(HAL_OUT, &(addr->variable), comp_id,"supply.%d.variable", num);
+    retval = hal_pin_new_real(comp_id, HAL_OUT, &(addr->variable), 0.0,"supply.%d.variable", num);
     if (retval != 0) {
 	return retval;
     }
-    retval = hal_pin_float_newf(HAL_OUT, &(addr->_variable), comp_id, "supply.%d._variable", num);
+    retval = hal_pin_new_real(comp_id, HAL_OUT, &(addr->_variable), 0.0, "supply.%d._variable", num);
     if (retval != 0) {
 	return retval;
     }
     /* export parameters */
-    retval = hal_pin_bit_newf(HAL_IO, &(addr->d), comp_id, "supply.%d.d", num);
+    retval = hal_pin_new_bool(comp_id, HAL_IO, &(addr->d), 0, "supply.%d.d", num);
     if (retval != 0) {
 	return retval;
     }
-    retval = hal_pin_float_newf(HAL_IO, &(addr->value), comp_id, "supply.%d.value", num);
+    retval = hal_pin_new_real(comp_id, HAL_IO, &(addr->value), 0.0, "supply.%d.value", num);
     if (retval != 0) {
 	return retval;
     }
-    /* init all structure members */
-    *(addr->q) = 0;
-    *(addr->_q) = 1;
-    *(addr->variable) = 0.0;
-    *(addr->_variable) = 0.0;
-    *(addr->d) = 0;
-    *(addr->value) = 0.0;
     /* export function for this loop */
-    rtapi_snprintf(buf, sizeof(buf), "supply.%d.update", num);
     retval =
-	hal_export_funct(buf, update_supply, &(supply_array[num]), 1, 0,
-	comp_id);
+	hal_export_functf(update_supply, &(supply_array[num]), 1, 0,
+	comp_id, "supply.%d.update", num);
     if (retval != 0) {
 	rtapi_print_msg(RTAPI_MSG_ERR,
 	    "SUPPLY: ERROR: update funct export failed\n");

@@ -77,7 +77,7 @@
 #undef Tcl_InitHashTable
 #define Tcl_InitHashTable (tclStubsPtr->tcl_InitHashTable)
 #endif
-#if (TK_MAJOR_VERSION>=8 && TK_MINOR_VERSION>=4)
+#if TK_MAJOR_VERSION * 100 + TK_MINOR_VERSION >= 804
 #  define HAVE_TK_SETCLASSPROCS
 #endif
 
@@ -85,6 +85,14 @@
  * Copy of TkClassProcs declarations form tkInt.h
  * (this is needed for Tcl ver =< 8.4a3)
  */
+
+#ifndef _ANSI_ARGS_
+#define _ANSI_ARGS_(x)	x
+#endif
+
+#ifndef Tk_Offset
+#define Tk_Offset	offsetof
+#endif
 
 typedef int (TkBindEvalProc) _ANSI_ARGS_((ClientData clientData,
 	Tcl_Interp *interp, XEvent *eventPtr, Tk_Window tkwin,
@@ -153,7 +161,7 @@ static LRESULT (CALLBACK *tkWinChildProc)(HWND hwnd, UINT message,
 
 /* The constant DUMMY_WINDOW is used to signal window creation 
    failure from the Togl_CreateWindow() */
-#define DUMMY_WINDOW -1
+#define DUMMY_WINDOW ((Window)-1)
 
 #define ALL_EVENTS_MASK 	\
    (KeyPressMask |		\
@@ -219,6 +227,7 @@ struct Togl
    int StereoFlag;
    int AuxNumber;
    int Indirect;
+   int CoreProfileFlag;         /* request an OpenGL 3.3 core-profile context */
    char *ShareList;             /* name (ident) of Togl to share dlists with */
    char *ShareContext;          /* name (ident) to share OpenGL context with */
 
@@ -348,9 +357,12 @@ static Tk_ConfigSpec configSpecs[] = {
     {TK_CONFIG_BOOLEAN, "-stereo", "stereo", "Stereo",
      "false", Tk_Offset(struct Togl, StereoFlag), 0, NULL},
 
+    {TK_CONFIG_BOOLEAN, "-coreprofile", "coreprofile", "CoreProfile",
+     "false", Tk_Offset(struct Togl, CoreProfileFlag), 0, NULL},
+
 #ifndef NO_TK_CURSOR
     { TK_CONFIG_ACTIVE_CURSOR, "-cursor", "cursor", "Cursor",
-     "", Tk_Offset(struct Togl, Cursor), TK_CONFIG_NULL_OK },
+     "", Tk_Offset(struct Togl, Cursor), TK_CONFIG_NULL_OK, NULL },
 #endif
 
     {TK_CONFIG_INT, "-time", "time", "Time",
@@ -699,10 +711,10 @@ int Togl_Init(Tcl_Interp *interp)
    int major,minor,patchLevel,releaseType;
 
 #ifdef USE_TCL_STUBS
-   if (Tcl_InitStubs(interp, "8.1", 0) == NULL) {return TCL_ERROR;}
+   if (Tcl_InitStubs(interp, TCL_VERSION, 0) == NULL) {return TCL_ERROR;}
 #endif
 #ifdef USE_TK_STUBS
-   if (Tk_InitStubs(interp, "8.1", 0) == NULL) {return TCL_ERROR;}
+   if (Tk_InitStubs(interp, TK_VERSION, 0) == NULL) {return TCL_ERROR;}
 #endif
 
    /* Skip all this on Tcl/Tk 8.0 or older.  Seems to work */
@@ -710,7 +722,7 @@ int Togl_Init(Tcl_Interp *interp)
    Tcl_GetVersion(&major,&minor,&patchLevel,&releaseType);
 
 #ifndef HAVE_TK_SETCLASSPROCS
-   if (major >= 8 && minor >= 4) {
+   if (major * 100 + minor >= 804) {
      TCL_ERR(interp,"Sorry, this instance of Togl was not compiled to work with Tcl/Tk 8.4 or higher.");
    }
 #endif
@@ -791,7 +803,7 @@ void Togl_ResetDefaultCallbacks( void )
 
 
 /*
- * Chnage the create callback for a specific Togl widget.
+ * Change the create callback for a specific Togl widget.
  */
 void Togl_SetCreateFunc( struct Togl *togl, Togl_Callback *proc )
 {
@@ -1048,13 +1060,26 @@ int Togl_Configure(Tcl_Interp *interp, struct Togl *togl,
    int oldStencilSize = togl->StencilSize;
    int oldAuxNumber   = togl->AuxNumber;
 
-#ifndef CONST84
-#define CONST84
+#if TK_MAJOR_VERSION >= 9
+   // Version 9+ uses Tcl_Obj* array as config whereas older uses a char* array
+   Tcl_Obj **optr = calloc(argc+1, sizeof(*optr));  // argc+1 to terminate list with a NULL pointer
+   for(int u = 0; u < argc; u++) {
+      optr[u] = Tcl_NewStringObj(argv[u], -1);
+   }
+#else
+   char **optr = argv;
 #endif
    if (Tk_ConfigureWidget(interp, togl->TkWin, configSpecs,
-                          argc, (CONST84 char**)argv, (char *)togl, flags) == TCL_ERROR) {
+                          argc, (void *)optr, (char *)togl, flags) == TCL_ERROR) {
       return(TCL_ERROR);
    }
+#if TK_MAJOR_VERSION >= 9
+   for(int u = 0; u < argc; u++) {
+      Tcl_DecrRefCount(optr[u]);
+   }
+   free(optr);
+#endif
+
 #ifndef USE_OVERLAY
    if (togl->OverlayFlag) {
      TCL_ERR(interp,"Sorry, overlay was disabled");
@@ -1125,7 +1150,7 @@ int Togl_Widget(ClientData clientData, Tcl_Interp *interp,
       return TCL_ERROR;
    }
 
-   Tk_Preserve((ClientData)togl);
+   Tcl_Preserve((ClientData)togl);
 
    if (!strncmp(argv[1], "configure", MAX(1, strlen(argv[1])))) {
       if (argc == 2) {
@@ -1236,11 +1261,9 @@ int Togl_Widget(ClientData clientData, Tcl_Interp *interp,
       }
    }
 
-   Tk_Release((ClientData)togl);
+   Tcl_Release((ClientData)togl);
    return result;
 }
-
-
 
 /*
  * Togl_Cmd
@@ -1293,7 +1316,8 @@ static int Togl_Cmd(ClientData clientData, Tcl_Interp *interp,
    togl->TkWin = tkwin;
    togl->Interp = interp;
 #ifndef NO_TK_CURSOR
-   togl->Cursor = None;
+   //togl->Cursor = None;
+   togl->Cursor = NULL;
 #endif
    togl->Width = 0;
    togl->Height = 0;
@@ -1420,7 +1444,7 @@ static int Togl_Cmd(ClientData clientData, Tcl_Interp *interp,
 
    /* If defined, setup timer */
    if (togl->TimerProc){
-      Tk_CreateTimerHandler( togl->TimerInterval, Togl_Timer, (ClientData)togl );
+      Tcl_CreateTimerHandler( togl->TimerInterval, Togl_Timer, (ClientData)togl );
    }
 
    Tcl_AppendResult(interp, Tk_PathName(tkwin), NULL);
@@ -1588,6 +1612,36 @@ static LRESULT CALLBACK Win32WinProc( HWND hwnd, UINT message,
 #endif /* WIN32 */
 
 
+/* GLX_ARB_create_context tokens (from GL/glxext.h), defined here so the core-
+ * profile path builds even against an older glx.h. */
+#ifndef GLX_CONTEXT_MAJOR_VERSION_ARB
+#define GLX_CONTEXT_MAJOR_VERSION_ARB      0x2091
+#endif
+#ifndef GLX_CONTEXT_MINOR_VERSION_ARB
+#define GLX_CONTEXT_MINOR_VERSION_ARB      0x2092
+#endif
+#ifndef GLX_CONTEXT_PROFILE_MASK_ARB
+#define GLX_CONTEXT_PROFILE_MASK_ARB       0x9126
+#endif
+#ifndef GLX_CONTEXT_CORE_PROFILE_BIT_ARB
+#define GLX_CONTEXT_CORE_PROFILE_BIT_ARB   0x00000001
+#endif
+/* GLX_EXT_create_context_es2_profile. Mesa exposes it wherever it exposes
+ * GLES, which includes the Raspberry Pi's v3d - a driver with no desktop core
+ * profile at all, and the reason the second request below exists. */
+#ifndef GLX_CONTEXT_ES_PROFILE_BIT_EXT
+#define GLX_CONTEXT_ES_PROFILE_BIT_EXT     0x00000004
+#endif
+
+/* A refused context request raises BadMatch/BadValue on the X connection, and
+ * Xlib's default handler exits the process. Asking for 3.3 core on a driver
+ * that has none is an expected step now, not a fatal one, so it is made with
+ * this installed and the null return value is the answer. */
+static int Togl_IgnoreXError(Display *dpy, XErrorEvent *event) {
+   (void)dpy; (void)event;
+   return 0;
+}
+
 
 /*
  * Togl_CreateWindow
@@ -1598,7 +1652,7 @@ static LRESULT CALLBACK Win32WinProc( HWND hwnd, UINT message,
 static Window Togl_CreateWindow(Tk_Window tkwin,
 				Window parent, 
 				ClientData instanceData) {
-  
+  (void)tkwin;
   struct Togl *togl = (struct Togl*) instanceData;
   XVisualInfo *visinfo = NULL;
   Display *dpy;
@@ -1650,6 +1704,98 @@ static Window Togl_CreateWindow(Tk_Window tkwin,
       assert(shareWith->GlCtx);
       togl->GlCtx = shareWith->GlCtx;
       printf("SHARE CTX\n");
+   }
+   else if (togl->CoreProfileFlag) {
+      /* The preview renderer's context, via an FBConfig and
+       * glXCreateContextAttribsARB: OpenGL 3.3 core where the driver has it,
+       * OpenGL ES 3.1 where it does not (Mesa's v3d on a Raspberry Pi 4 has no
+       * desktop core profile at all - maximum core version 0.0, compatibility
+       * profile 2.1). The renderer is the same either way; only the API
+       * differs, and rs274.glcanon_gl reads which one off the context.
+       *
+       * Used by AXIS's modern preview renderer; the default (below) is left
+       * untouched so vismach and other Togl users keep their legacy
+       * contexts. */
+      int fb_attribs[] = {
+         GLX_X_RENDERABLE,  True,
+         GLX_DRAWABLE_TYPE, GLX_WINDOW_BIT,
+         GLX_RENDER_TYPE,   GLX_RGBA_BIT,
+         GLX_RED_SIZE,      togl->RgbaRed,
+         GLX_GREEN_SIZE,    togl->RgbaGreen,
+         GLX_BLUE_SIZE,     togl->RgbaBlue,
+         GLX_DEPTH_SIZE,    (togl->DepthFlag ? togl->DepthSize : 24),
+         GLX_DOUBLEBUFFER,  (togl->DoubleFlag ? True : False),
+         None
+      };
+      int nconfigs = 0;
+      GLXFBConfig *fbconfigs;
+      GLXFBConfig fbconfig;
+      GLXContext (*createContextAttribs)(Display*, GLXFBConfig, GLXContext,
+                                         Bool, const int*);
+      int core_attribs[] = {
+         GLX_CONTEXT_MAJOR_VERSION_ARB, 3,
+         GLX_CONTEXT_MINOR_VERSION_ARB, 3,
+         GLX_CONTEXT_PROFILE_MASK_ARB,  GLX_CONTEXT_CORE_PROFILE_BIT_ARB,
+         None
+      };
+      int es_attribs[] = {
+         GLX_CONTEXT_MAJOR_VERSION_ARB, 3,
+         GLX_CONTEXT_MINOR_VERSION_ARB, 1,
+         GLX_CONTEXT_PROFILE_MASK_ARB,  GLX_CONTEXT_ES_PROFILE_BIT_EXT,
+         None
+      };
+      int (*prevHandler)(Display*, XErrorEvent*);
+
+      fbconfigs = glXChooseFBConfig(dpy, Tk_ScreenNumber(togl->TkWin),
+                                    fb_attribs, &nconfigs);
+      if (!fbconfigs || nconfigs < 1) {
+         Tcl_SetResult(togl->Interp, "Togl: no framebuffer config for OpenGL "
+            "3.3 core or OpenGL ES 3.1; requires Mesa (try "
+            "LIBGL_ALWAYS_SOFTWARE=1)", TCL_STATIC);
+         return DUMMY_WINDOW;
+      }
+      fbconfig = fbconfigs[0];
+      visinfo = glXGetVisualFromFBConfig(dpy, fbconfig);
+      XFree(fbconfigs);
+      if (!visinfo) {
+         Tcl_SetResult(togl->Interp,
+            "Togl: glXGetVisualFromFBConfig failed for the preview "
+            "renderer's framebuffer config", TCL_STATIC);
+         return DUMMY_WINDOW;
+      }
+
+      createContextAttribs = (GLXContext (*)(Display*, GLXFBConfig, GLXContext,
+                                             Bool, const int*))
+         glXGetProcAddressARB((const GLubyte*)"glXCreateContextAttribsARB");
+      if (!createContextAttribs) {
+         Tcl_SetResult(togl->Interp, "Togl: glXCreateContextAttribsARB "
+            "unavailable; OpenGL 3.3 core or OpenGL ES 3.1 required (try "
+            "LIBGL_ALWAYS_SOFTWARE=1)", TCL_STATIC);
+         return DUMMY_WINDOW;
+      }
+
+      if (togl->Indirect) directCtx = GL_FALSE;
+
+      /* Desktop 3.3 core first, so a machine that has always taken that path
+       * keeps taking it. Both attempts run with the error handler swapped out:
+       * a refusal is how the two are told apart, not a reason to exit. */
+      prevHandler = XSetErrorHandler(Togl_IgnoreXError);
+      togl->GlCtx = createContextAttribs(dpy, fbconfig, NULL, directCtx,
+                                         core_attribs);
+      XSync(dpy, False);
+      if (togl->GlCtx == NULL) {
+         togl->GlCtx = createContextAttribs(dpy, fbconfig, NULL, directCtx,
+                                            es_attribs);
+         XSync(dpy, False);
+      }
+      XSetErrorHandler(prevHandler);
+
+      if (togl->GlCtx == NULL) {
+         Tcl_SetResult(togl->Interp, "Togl: could not create an OpenGL 3.3 "
+            "core or OpenGL ES 3.1 context; the preview renderer needs one of "
+            "them (try LIBGL_ALWAYS_SOFTWARE=1)", TCL_STATIC);
+         return DUMMY_WINDOW;
+      }
    }
    else {
       int attempt;
@@ -1740,12 +1886,13 @@ static Window Togl_CreateWindow(Tk_Window tkwin,
          if (shareWith)
             shareCtx = shareWith->GlCtx;
          else
-            shareCtx = None;
+            shareCtx = NULL; //None;
          togl->GlCtx = glXCreateContext(dpy, visinfo, shareCtx, directCtx);
       }
       else {
          /* don't share display lists */
-         togl->GlCtx = glXCreateContext(dpy, visinfo, None, directCtx);
+         //togl->GlCtx = glXCreateContext(dpy, visinfo, None, directCtx);
+         togl->GlCtx = glXCreateContext(dpy, visinfo, NULL, directCtx);
       }
 
       if (togl->GlCtx == NULL) {
@@ -2152,7 +2299,11 @@ static void ToglCmdDeletedProc( ClientData clientData )
  * Gets called when an Togl widget is destroyed.
  */
 #if (TK_MAJOR_VERSION * 100 + TK_MINOR_VERSION) >= 401
+#if TK_MAJOR_VERSION >= 9
+static void Togl_Destroy( void *clientData )
+#else
 static void Togl_Destroy( char *clientData )
+#endif
 #else
 static void Togl_Destroy( ClientData clientData )
 #endif
@@ -2283,7 +2434,7 @@ void Togl_PostRedisplay( struct Togl *togl )
 {
    if (!togl->UpdatePending) {
       togl->UpdatePending = GL_TRUE;
-      Tk_DoWhenIdle( Togl_Render, (ClientData) togl );
+      Tcl_DoWhenIdle( Togl_Render, (ClientData) togl );
    }
 }
 
@@ -2862,7 +3013,7 @@ void Togl_PostOverlayRedisplay( struct Togl *togl )
 {
    if (!togl->OverlayUpdatePending
        && togl->OverlayWindow && togl->OverlayDisplayProc) {
-      Tk_DoWhenIdle( RenderOverlay, (ClientData) togl );
+      Tcl_DoWhenIdle( RenderOverlay, (ClientData) togl );
       togl->OverlayUpdatePending = 1;
    }
 }
@@ -3186,7 +3337,7 @@ int main(int argc, char *argv[])
  *
  * MacintoshInit --
  *
- *	This procedure calls Mac specific initilization calls.  Most of
+ *	This procedure calls Mac specific initialization calls.  Most of
  *	these calls must be made as soon as possible in the startup
  *	process.
  *
@@ -3215,7 +3366,7 @@ int Togl_MacInit(void)
 
    /*
     * Tk needs us to set the qd pointer it uses.  This is needed
-    * so Tk doesn't have to assume the availablity of the qd global
+    * so Tk doesn't have to assume the availability of the qd global
     * variable.  Which in turn allows Tk to be used in code resources.
     */
    tcl_macQdPtr = &qd;

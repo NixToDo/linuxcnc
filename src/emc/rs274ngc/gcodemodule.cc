@@ -16,23 +16,44 @@
 //    along with this program; if not, write to the Free Software
 //    Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
+/*
+
+  Notes:
+
+  NURBS
+  -----
+  The code in this file for nurbs calculations is from University of Palermo.
+  The publications can be found at: http://wiki.linuxcnc.org/cgi-bin/wiki.pl?NURBS
+  AMST08_art837759.pdf and ECME14.pdf
+
+  1: 
+  M. Leto, R. Licari, E. Lo Valvo1 , M. Piacentini:
+  CAD/CAM INTEGRATION FOR NURBS PATH INTERPOLATION ON PC BASED REAL-TIME NUMERICAL CONTROL
+  Proceedings of AMST 2008 Conference, 2008, pp. 223-233
+
+  2:
+  ERNESTO LO VALVO, STEFANO DRAGO:
+  An Efficient NURBS Path Generator for a Open Source CNC
+  Recent Advances in Mechanical Engineering (pp.173-180). WSEAS Press
+
+  The code from University of Palermo is modified to work on planes xy, yz and zx by Joachim Franek
+  */
+
+
+#include <sys/time.h>
+
 #include <Python.h>
-#include "py3c/py3c.h"
 #include <structmember.h>
 
 #include "rs274ngc.hh"
 #include "rs274ngc_interp.hh"
-#include "interp_return.hh"
-#include "canon.hh"
-#include "config.h"		// LINELEN
+#include "nml_intf/interp_return.hh"
+#include "nml_intf/canon.hh"
 
 int _task = 0; // control preview behaviour when remapping
 
 char _parameter_file_name[LINELEN];
 
-#if PY_MAJOR_VERSION >=3
-
-extern "C" PyObject* PyInit_emctask(void);
 extern "C" PyObject* PyInit_interpreter(void);
 extern "C" PyObject* PyInit_emccanon(void);
 extern "C" struct _inittab builtin_modules[];
@@ -42,23 +63,11 @@ struct _inittab builtin_modules[] = {
     { NULL, NULL }
 };
 
-#else
-
-extern "C" void initinterpreter();
-extern "C" void initemccanon();
-extern "C" struct _inittab builtin_modules[];
-struct _inittab builtin_modules[] = {
-    { (char *) "interpreter", initinterpreter },
-    { (char *) "emccanon", initemccanon },
-    // any others...
-    { NULL, NULL }
-};
-#endif
 
 static PyObject *int_array(int *arr, int sz) {
     PyObject *res = PyTuple_New(sz);
     for(int i = 0; i < sz; i++) {
-        PyTuple_SET_ITEM(res, i, PyInt_FromLong(arr[i]));
+        PyTuple_SET_ITEM(res, i, PyLong_FromLong(arr[i]));
     }
     return res;
 }
@@ -70,45 +79,47 @@ typedef struct {
     int mcodes[ACTIVE_M_CODES];
 } LineCode;
 
-static PyObject *LineCode_gcodes(LineCode *l) {
+static PyObject *LineCode_gcodes(LineCode *l, void *) {
     return int_array(l->gcodes, ACTIVE_G_CODES);
 }
-static PyObject *LineCode_mcodes(LineCode *l) {
+static PyObject *LineCode_mcodes(LineCode *l, void *) {
     return int_array(l->mcodes, ACTIVE_M_CODES);
 }
 
 static PyGetSetDef LineCodeGetSet[] = {
-    {(char*)"gcodes", (getter)LineCode_gcodes},
-    {(char*)"mcodes", (getter)LineCode_mcodes},
-    {NULL, NULL},
+    {(char*)"gcodes", (getter)LineCode_gcodes, NULL, NULL, NULL},
+    {(char*)"mcodes", (getter)LineCode_mcodes, NULL, NULL, NULL},
+    {},
 };
 
 static PyMemberDef LineCodeMembers[] = {
-    {(char*)"sequence_number", T_INT, offsetof(LineCode, gcodes[0]), READONLY},
+    {(char*)"sequence_number", T_INT, offsetof(LineCode, gcodes[0]), READONLY, NULL},
 
-    {(char*)"feed_rate", T_DOUBLE, offsetof(LineCode, settings[1]), READONLY},
-    {(char*)"speed", T_DOUBLE, offsetof(LineCode, settings[2]), READONLY},
-    {(char*)"motion_mode", T_INT, offsetof(LineCode, gcodes[1]), READONLY},
-    {(char*)"block", T_INT, offsetof(LineCode, gcodes[2]), READONLY},
-    {(char*)"plane", T_INT, offsetof(LineCode, gcodes[3]), READONLY},
-    {(char*)"cutter_side", T_INT, offsetof(LineCode, gcodes[4]), READONLY},
-    {(char*)"units", T_INT, offsetof(LineCode, gcodes[5]), READONLY},
-    {(char*)"distance_mode", T_INT, offsetof(LineCode, gcodes[6]), READONLY},
-    {(char*)"feed_mode", T_INT, offsetof(LineCode, gcodes[7]), READONLY},
-    {(char*)"origin", T_INT, offsetof(LineCode, gcodes[8]), READONLY},
-    {(char*)"tool_length_offset", T_INT, offsetof(LineCode, gcodes[9]), READONLY},
-    {(char*)"retract_mode", T_INT, offsetof(LineCode, gcodes[10]), READONLY},
-    {(char*)"path_mode", T_INT, offsetof(LineCode, gcodes[11]), READONLY},
+    {(char*)"feed_rate", T_DOUBLE, offsetof(LineCode, settings[1]), READONLY, NULL},
+    {(char*)"speed", T_DOUBLE, offsetof(LineCode, settings[2]), READONLY, NULL},
+    {(char*)"motion_mode", T_INT, offsetof(LineCode, gcodes[1]), READONLY, NULL},
+    {(char*)"block", T_INT, offsetof(LineCode, gcodes[2]), READONLY, NULL},
+    {(char*)"plane", T_INT, offsetof(LineCode, gcodes[3]), READONLY, NULL},
+    {(char*)"cutter_side", T_INT, offsetof(LineCode, gcodes[4]), READONLY, NULL},
+    {(char*)"units", T_INT, offsetof(LineCode, gcodes[5]), READONLY, NULL},
+    {(char*)"distance_mode", T_INT, offsetof(LineCode, gcodes[6]), READONLY, NULL},
+    {(char*)"feed_mode", T_INT, offsetof(LineCode, gcodes[7]), READONLY, NULL},
+    {(char*)"origin", T_INT, offsetof(LineCode, gcodes[8]), READONLY, NULL},
+    {(char*)"tool_length_offset", T_INT, offsetof(LineCode, gcodes[9]), READONLY, NULL},
+    {(char*)"retract_mode", T_INT, offsetof(LineCode, gcodes[10]), READONLY, NULL},
+    {(char*)"path_mode", T_INT, offsetof(LineCode, gcodes[11]), READONLY, NULL},
 
-    {(char*)"stopping", T_INT, offsetof(LineCode, mcodes[1]), READONLY},
-    {(char*)"spindle", T_INT, offsetof(LineCode, mcodes[2]), READONLY},
-    {(char*)"toolchange", T_INT, offsetof(LineCode, mcodes[3]), READONLY},
-    {(char*)"mist", T_INT, offsetof(LineCode, mcodes[4]), READONLY},
-    {(char*)"flood", T_INT, offsetof(LineCode, mcodes[5]), READONLY},
-    {(char*)"overrides", T_INT, offsetof(LineCode, mcodes[6]), READONLY},
-    {NULL}
+    {(char*)"stopping", T_INT, offsetof(LineCode, mcodes[1]), READONLY, NULL},
+    {(char*)"spindle", T_INT, offsetof(LineCode, mcodes[2]), READONLY, NULL},
+    {(char*)"toolchange", T_INT, offsetof(LineCode, mcodes[3]), READONLY, NULL},
+    {(char*)"mist", T_INT, offsetof(LineCode, mcodes[4]), READONLY, NULL},
+    {(char*)"flood", T_INT, offsetof(LineCode, mcodes[5]), READONLY, NULL},
+    {(char*)"overrides", T_INT, offsetof(LineCode, mcodes[6]), READONLY, NULL},
+    {}
 };
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wzero-as-null-pointer-constant"
 static PyTypeObject LineCodeType = {
     PyVarObject_HEAD_INIT(NULL, 0)
     "gcode.linecode",       /*tp_name*/
@@ -151,11 +162,30 @@ static PyTypeObject LineCodeType = {
     PyType_GenericNew,      /*tp_new*/
     0,                      /*tp_free*/
     0,                      /*tp_is_gc*/
+    0,                      /*tp_bases*/
+    0,                      /*tp_mro*/
+    0,                      /*tp_cache*/
+    0,                      /*tp_subclasses*/
+    0,                      /*tp_weaklink*/
+    0,                      /*tp_del*/
+    0,                      /*tp_version_tag*/
+    0,                      /*tp_finalize*/
+#if PY_VERSION_HEX >= 0x030800f0	// 3.8
+    0,                      /*tp_vectorcall*/
+#if PY_VERSION_HEX >= 0x030c00f0	// 3.12
+    0,                      /*tp_watched*/
+#if PY_VERSION_HEX >= 0x030d00f0	// 3.13
+    0,                      /*tp_versions_used*/
+#endif
+#endif
+#endif
 };
+#pragma GCC diagnostic pop
 
 static PyObject *callback;
 static int interp_error;
 static int last_sequence_number;
+static int selected_tool = 0;
 static bool metric;
 static double _pos_x, _pos_y, _pos_z, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w;
 EmcPose tool_offset;
@@ -164,11 +194,262 @@ static InterpBase *pinterp;
 
 #define callmethod(o, m, f, ...) PyObject_CallMethod((o), (char*)(m), (char*)(f), ## __VA_ARGS__)
 
-static void maybe_new_line(int sequence_number=pinterp->sequence_number());
-static void maybe_new_line(int sequence_number) {
+// ---------------------------------------------------------------------------
+// The move-batch protocol
+// ---------------------------------------------------------------------------
+//
+// An *opt-in* alternative to the per-event callback protocol, for consumers
+// that would rather receive a million moves as a few numpy-shaped blocks than
+// as a million Python calls. A canon object opts in by setting
+// `use_move_batches = True` and providing a callable `move_batch`; both are
+// read once, in parse_file, before any interpretation. Everything below is
+// inert when the flag is absent, and the legacy callback sequence is then
+// byte-for-byte what it always was.
+//
+// The flag must be a *bool*, not merely truthy: a canon that answers every
+// unknown attribute with a stub - `def __getattr__(self, name): return lambda
+// *a: None`, a common idiom for partial canons, and what
+// tests/interp_initcode's does - would otherwise hand back a callable for both
+// `use_move_batches` and `move_batch` and be opted in without ever asking,
+// silently dropping every batched move into the stub.
+//
+// In batch mode the canon functions listed under `MoveBatch::Kind` do not call
+// Python at all. Each appends one fixed-width row of 13 float64s to a C-owned
+// buffer:
+//
+//     [kind, line_number, x, y, z, a, b, c, u, v, w, feedrate, spindle_speed]
+//
+// Move rows (kinds 0-3) carry exactly the axis values the legacy call would
+// have passed - after the `_pos_*` update and after the metric division - so a
+// consumer reproduces the legacy geometry bit for bit. Rigid-tap rows carry
+// x,y,z and zeros for a..w, as the legacy `rigid_tap` callback did.
+//
+// Non-move rows keep the row width by carrying their payload in the axis
+// slots, zeros elsewhere:
+//
+//     dwell (4)        seconds in x
+//     m1xx  (5)        function index, P, Q in x, y, z
+//     change_tool (6)  tool number in x
+//     tool_offset (7)  the nine offsets in x..w
+//
+// `feedrate` is the last SET_FEED_RATE value, post-conversion, so a consumer
+// never has to correlate rows with a separate rate callback; it starts at 60.0
+// because GLCanon starts at feedrate 1 (= rate/60). `spindle_speed` is the last
+// SET_SPINDLE_SPEED for spindle 0 - data the legacy protocol never delivered,
+// since that canon call is an empty stub - carried here so an S word costs
+// nothing and never fragments a batch.
+//
+// Ordering: the buffer is flushed before *any* still-forwarded Python callback,
+// which is guaranteed by flushing at the top of maybe_new_line() - see the
+// invariant comment there - and also when full, before the periodic
+// check_abort(), and at end of parse. What deliberately does NOT flush is
+// anything whose effect the rows already carry: the batched events (a G81 cycle
+// emits a DWELL per hole, and flushing on those would shred a 100k-hole file
+// into four-row batches) and SET_FEED_RATE / SET_SPINDLE_SPEED (both travel in
+// the row's own columns; CAM output with adaptive feed emits an F word every
+// few moves, and flushing there made batch mode slower than the protocol it
+// replaces - see SET_FEED_RATE).
+//
+// Lifetime: rows are delivered as a read-only memoryview over the buffer, valid
+// only for the duration of the move_batch call - the consumer must copy or
+// fully consume it before returning. The buffer is allocated once and never
+// freed or reallocated, so a consumer that illegally retains the view reads
+// stale numbers rather than freed memory.
+//
+// Ownership: like every other piece of canon state in this file (`callback`,
+// `pinterp`, `metric`, `_pos_*`), the buffer is per-process, not per-parse -
+// there is exactly one copy, since this translation unit is linked into
+// lib/python/gcode.so and nothing else. `interp_from_shlib` swaps the
+// *interpreter*, not the canon, so an alternate interpreter still appends here.
+// What the batch protocol adds is a way for that to fail *quietly*: a second
+// parse_file entered while one is in flight (gcode.parse is not reentrant, and
+// AXIS's check_abort pumps the Tk event loop) would re-arm the buffer for a
+// different canon, and the outer parse's rows would then be delivered to the
+// inner parse's consumer. Hence `owner_`: the canon the buffer was armed for,
+// compared - never dereferenced - on every append and flush, so a mismatch
+// raises instead of misdelivering.
+//
+// Opting a GUI in is a separate change; nothing in tree sets the flag yet.
+
+class MoveBatch {
+public:
+    // Column 0 of a row. Values are protocol, not implementation detail: a
+    // consumer switches on them, so they may be appended to but never
+    // renumbered. Kinds 0-3 are moves; 4-7 carry the payloads listed above.
+    enum Kind : int {
+        Traverse = 0,
+        Feed = 1,
+        Probe = 2,
+        RigidTap = 3,
+        Dwell = 4,
+        M1xx = 5,
+        ChangeTool = 6,
+        ToolOffset = 7,
+    };
+
+    static constexpr int ROW = 13;      // float64s per row, per the layout above
+    // Rows per delivery: 1.7 MB of buffer, and the size the consumer's
+    // per-batch numpy temporaries are proportional to. Measured on 500k moves
+    // (aarch64 dev container): 65536 costs ~32 MB more peak RSS than the
+    // per-move canon for no gain, while 16384 and 4096 both land at the
+    // per-move canon's peak exactly and run marginally faster. 16384 is the
+    // larger of the two that costs nothing, leaving headroom for a consumer
+    // whose per-batch overhead is higher than the reference one's.
+    static constexpr int CAP = 16384;
+
+    // Read the opt-in off `canon` and, if it is set, make the buffer ready for
+    // it. Returns false with a Python exception set; true means the parse may
+    // proceed, in whichever protocol active() now reports.
+    static bool arm(PyObject *canon) {
+        owner_ = nullptr;
+        count_ = 0;
+        rate_ = 60.0;
+        rate_seen_ = false;
+        speed_ = 0.0;
+        PyObject *flag = PyObject_GetAttrString(canon, "use_move_batches");
+        if(!flag) {
+            if(!PyErr_ExceptionMatches(PyExc_AttributeError)) return false;
+            PyErr_Clear();              // no attribute: the legacy protocol
+            return true;
+        }
+        // Anything that is not a bool is not an opt-in - see the note on
+        // catch-all `__getattr__` above. Legacy protocol, no complaint: a
+        // canon that never mentions the flag must not be made to fail.
+        bool opted_in = PyBool_Check(flag) && flag == Py_True;
+        Py_DECREF(flag);
+        if(!opted_in) return true;
+        // Fail fast rather than fall back: a canon that asked for batches and
+        // silently got per-move callbacks would look like it worked and quietly
+        // build a different program.
+        PyObject *consumer = PyObject_GetAttrString(canon, "move_batch");
+        bool usable = consumer && PyCallable_Check(consumer);
+        Py_XDECREF(consumer);
+        if(!usable) {
+            PyErr_Clear();
+            PyErr_SetString(PyExc_TypeError,
+                    "parse: canon sets use_move_batches but has no callable "
+                    "move_batch");
+            return false;
+        }
+        if(!buf_) {
+            buf_ = (double*)malloc((size_t)CAP * ROW * sizeof(double));
+            if(!buf_) { PyErr_NoMemory(); return false; }
+        }
+        owner_ = canon;
+        return true;
+    }
+
+    static bool active() { return owner_ != nullptr; }
+
+    static void append(Kind kind, int line_number,
+                       double x, double y, double z,
+                       double a, double b, double c,
+                       double u, double v, double w) {
+        if(!owned()) return;
+        double *row = buf_ + (size_t)count_ * ROW;
+        row[0] = static_cast<double>(kind);
+        row[1] = line_number;
+        row[2] = x; row[3] = y; row[4] = z;
+        row[5] = a; row[6] = b; row[7] = c;
+        row[8] = u; row[9] = v; row[10] = w;
+        row[11] = rate_;
+        row[12] = speed_;
+        count_ ++;
+        // No next_line is delivered for a batched row, but the error line the
+        // parse reports must still advance with it.
+        last_sequence_number = line_number;
+        if(count_ >= CAP) flush();
+    }
+
+    static void flush() {
+        if(!active()) return;
+        if(count_ == 0) return;
+        // Never call into Python with an exception pending: the consumer would
+        // be handed a broken interpreter state, and the error we already have
+        // is the one worth reporting.
+        if(interp_error) return;
+        if(!owned()) return;
+        int n = count_;
+        // Reset before the call, not after: if move_batch raises, these rows
+        // have still been handed over once, and re-delivering them from a later
+        // flush would duplicate them in the consumer's program.
+        count_ = 0;
+        PyObject *view = PyMemoryView_FromMemory((char*)buf_,
+                (Py_ssize_t)n * ROW * sizeof(double), PyBUF_READ);
+        if(!view) { interp_error ++; return; }
+        PyObject *result = callmethod(callback, "move_batch", "O", view);
+        Py_DECREF(view);
+        if(result == NULL) interp_error ++;
+        Py_XDECREF(result);
+    }
+
+    // Record the rate the following rows will carry, and answer whether it
+    // actually moved. The interpreter reports an F word whether or not it
+    // changes anything - interp_execute.cc branches on `block->f_flag` alone,
+    // with no comparison against settings->feed_rate - so CAM output that
+    // repeats the same `F600` on every line calls in here once per move. In
+    // batch mode there is nothing to say about a rate that did not change: the
+    // value already reached the consumer in every row's feedrate column. The
+    // first call of a parse always counts as a change, so a consumer's own
+    // starting feed rate is set from the file even when the file opens with the
+    // same 60.0 this starts at.
+    static bool feed_rate(double rate) {
+        if(rate == rate_ && rate_seen_) return false;
+        rate_ = rate;
+        rate_seen_ = true;
+        return true;
+    }
+
+    // Tracked whether or not batch mode is on - one store, and in legacy mode
+    // nothing ever reads it. There is no callback to suppress here: this canon
+    // call has never forwarded anything.
+    static void spindle_speed(double rpm) { speed_ = rpm; }
+
+private:
+    MoveBatch() = delete;
+
+    // Is the buffer still the one armed for the canon being parsed into? Only
+    // a re-entered parse_file can make this false; say so rather than deliver
+    // one canon's moves to another.
+    static bool owned() {
+        if(owner_ == callback) return true;
+        PyErr_SetString(PyExc_RuntimeError,
+                "gcode.parse: the move batch belongs to a different canon - "
+                "gcode.parse was re-entered");
+        interp_error ++;
+        return false;
+    }
+
+    static inline PyObject *owner_ = nullptr;   // compared, never dereferenced
+    static inline double *buf_ = nullptr;
+    static inline int count_ = 0;
+    static inline double rate_ = 60.0;
+    static inline bool rate_seen_ = false;
+    static inline double speed_ = 0.0;
+};
+
+// The `next_line` delivery guard, split off from last_sequence_number: batched
+// rows advance that one (parse_file returns it, and error reporting reads it)
+// without a next_line having been delivered, so a still-forwarded callback
+// later on the same line must not be mistaken for a repeat. The two move in
+// lockstep in legacy mode, where nothing but delivery touches either.
+static int last_delivered_sequence_number;
+
+static void maybe_new_line(int sequence_number);
+static void maybe_new_line();
+
+// The line number for a batched event whose canon function is not given one.
+static int batch_line_number() {
+    return pinterp ? pinterp->sequence_number() : last_sequence_number;
+}
+
+// Deliver next_line, without flushing. Split out for SET_FEED_RATE, which is
+// the one forwarder whose state the batch rows already carry - see there. In
+// legacy mode this *is* maybe_new_line(), since the flush is a no-op.
+static void deliver_new_line(int sequence_number) {
     if(!pinterp) return;
     if(interp_error) return;
-    if(sequence_number == last_sequence_number)
+    if(sequence_number == last_delivered_sequence_number)
         return;
     LineCode *new_line_code =
         (LineCode*)(PyObject_New(LineCode, &LineCodeType));
@@ -177,31 +458,134 @@ static void maybe_new_line(int sequence_number) {
     pinterp->active_m_codes(new_line_code->mcodes);
     new_line_code->gcodes[0] = sequence_number;
     last_sequence_number = sequence_number;
-    PyObject *result = 
+    last_delivered_sequence_number = sequence_number;
+    PyObject *result =
         callmethod(callback, "next_line", "O", new_line_code);
     Py_DECREF(new_line_code);
     if(result == NULL) interp_error ++;
     Py_XDECREF(result);
 }
 
-void NURBS_FEED(int line_number, std::vector<CONTROL_POINT> nurbs_control_points, unsigned int k) {
+static void maybe_new_line(int sequence_number) {
+    // INVARIANT: every canon function that forwards a Python callback calls
+    // maybe_new_line() first, and this flush is what makes that the batch
+    // protocol's ordering guarantee - pending rows are delivered before the
+    // callback that would change the state they were produced under. A new
+    // forwarder added without this call would silently deliver its callback
+    // ahead of moves that preceded it; the legacy-vs-batch equality test is
+    // the tripwire for that. The one deliberate exception is SET_FEED_RATE.
+    MoveBatch::flush();
+    deliver_new_line(sequence_number);
+}
+
+static void maybe_new_line() {
+    if(!pinterp) return;
+    maybe_new_line(pinterp->sequence_number());
+}
+
+//das ist für die Vorschau
+/* G_5_2/G_5_3*/
+void NURBS_G5_FEED(int line_number, const std::vector<NURBS_CONTROL_POINT>& nurbs_control_points, unsigned int nurbs_order, CANON_PLANE plane)
+    {
     double u = 0.0;
     unsigned int n = nurbs_control_points.size() - 1;
-    double umax = n - k + 2;
+    double umax = n - nurbs_order + 2;
     unsigned int div = nurbs_control_points.size()*15;
-    std::vector<unsigned int> knot_vector = knot_vector_creator(n, k);	
-    PLANE_POINT P1;
+    std::vector<unsigned int> knot_vector = nurbs_G5_knot_vector_creator(n, nurbs_order);	
+    NURBS_PLANE_POINT P1;
     while (u+umax/div < umax) {
-        PLANE_POINT P1 = nurbs_point(u+umax/div,k,nurbs_control_points,knot_vector);
-        STRAIGHT_FEED(line_number, P1.X,P1.Y, _pos_z, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w);
+        NURBS_PLANE_POINT P1 = nurbs_G5_point(u+umax/div,nurbs_order,nurbs_control_points,knot_vector);
+        //printf("P1 X: %8.4f Y: %8.4f pos_x: %8.4f pos_y: %8.4f pos_z: %8.4f (F: %s L: %d)\n",P1.NURBS_X,P1.NURBS_Y,_pos_x,_pos_y,_pos_z,__FILE__,__LINE__);
+
+        //STRAIGHT_FEED(line_number, P1.X,P1.Y, _pos_z, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w);
+        if(plane==CANON_PLANE::XY) {
+            //printf("XY (F: %s L: %d)\n",__FILE__,__LINE__);
+            STRAIGHT_FEED(line_number, P1.NURBS_X, P1.NURBS_Y, _pos_z, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w); //
+            }
+        if(plane==CANON_PLANE::YZ) {
+            //printf("YZ (F: %s L: %d)\n",__FILE__,__LINE__);
+            STRAIGHT_FEED(line_number, _pos_x, P1.NURBS_X, P1.NURBS_Y, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w); //
+            }
+        if(plane==CANON_PLANE::XZ) {
+            //printf("XZ (F: %s L: %d)\n",__FILE__,__LINE__);
+            STRAIGHT_FEED(line_number, P1.NURBS_Y, _pos_y, P1.NURBS_X, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w); //
+            }
         u = u + umax/div;
-    } 
-    P1.X = nurbs_control_points[n].X;
-    P1.Y = nurbs_control_points[n].Y;
-    STRAIGHT_FEED(line_number, P1.X,P1.Y, _pos_z, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w);
+        } 
+    P1.NURBS_X = nurbs_control_points[n].NURBS_X;
+    P1.NURBS_Y = nurbs_control_points[n].NURBS_Y;
+    //printf("Pn X: %8.4f Y: %8.4f pos_x: %8.4f pos_y: %8.4f pos_z: %8.4f (F: %s L: %d)\n",P1.X,P1.Y,_pos_x,_pos_y,_pos_z,__FILE__,__LINE__);
+    //STRAIGHT_FEED(line_number, P1.X,P1.Y, _pos_z, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w);
+    if(plane==CANON_PLANE::XY) {
+        STRAIGHT_FEED(line_number, P1.NURBS_X, P1.NURBS_Y, _pos_z, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w); //
+        }
+    if(plane==CANON_PLANE::YZ) {
+        STRAIGHT_FEED(line_number, _pos_x, P1.NURBS_X, P1.NURBS_Y, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w); //
+        }
+    if(plane==CANON_PLANE::XZ) {
+        STRAIGHT_FEED(line_number, P1.NURBS_Y, _pos_y, P1.NURBS_X, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w); //
+        }
     knot_vector.clear();
 }
 
+/* G_6_2  L_option is unused */
+//-----------------------------------------------------------------------------------------------------------------------------------------
+void NURBS_G6_FEED(int line_number, const std::vector<NURBS_G6_CONTROL_POINT>& nurbs_control_points, unsigned int k, double /*feedrate*/, int /*L_option*/, CANON_PLANE plane) { // (L_option: NICU, NICL, NICC see publication from Lo Valvo and Drago)
+    double u = 0.0;
+    unsigned int n = nurbs_control_points.size() - 1-k;
+    double umax = nurbs_control_points[n+k].NURBS_K;
+    unsigned int div = (nurbs_control_points.size()-k)*15;
+    std::vector<double> knot_vector = nurbs_g6_knot_vector_creator(n, k, nurbs_control_points);
+
+    //printf("gcodemodule NURBS_G6_FEED cps: %ld k: %d L: %d fr: %f (F: %s L: %d)\n",nurbs_control_points.size(), k, L_option, feedrate, __FILE__, __LINE__);
+    NURBS_PLANE_POINT P1x, P1;
+    std::vector< std::vector<double> > A6;
+    A6 = nurbs_G6_Nmix_creator(u+umax/div, k, n+1, knot_vector);
+    P1 = nurbs_G6_pointx(knot_vector[0],k,nurbs_control_points,knot_vector,A6);	
+    //printf("%.3d P1  X: %8.4f Y: %8.4f pos_x: %8.4f pos_y: %8.4f pos_z: %8.4f (F: %s L: %d)\n",line_number,P1.NURBS_X,P1.NURBS_Y,_pos_x,_pos_y,_pos_z,__FILE__,__LINE__);
+    //STRAIGHT_FEED(line_number, P1.NURBS_X,P1.NURBS_Y, _pos_z, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w);
+    if(plane==CANON_PLANE::XY) {
+		    STRAIGHT_FEED(line_number, P1.NURBS_X, P1.NURBS_Y, _pos_z, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w);
+        }
+    if(plane==CANON_PLANE::YZ) {
+		    STRAIGHT_FEED(line_number, _pos_x, P1.NURBS_X, P1.NURBS_Y, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w);
+        }
+    if(plane==CANON_PLANE::XZ) {
+		    STRAIGHT_FEED(line_number, P1.NURBS_Y, _pos_y, P1.NURBS_X, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w);
+        }
+    u=0.1;
+    while (u+umax/div < umax) {
+        P1x = nurbs_G6_point_x(u+umax/div,k,nurbs_control_points,knot_vector);
+        //printf("%.3d P1x X: %8.4f Y: %8.4f pos_x: %8.4f pos_y: %8.4f pos_z: %8.4f (F: %s L: %d)\n",line_number,P1x.NURBS_X,P1x.NURBS_Y,_pos_x,_pos_y,_pos_z,__FILE__,__LINE__);
+        //STRAIGHT_FEED(line_number, P1x.NURBS_X,P1x.NURBS_Y, _pos_z, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w);
+		if(plane==CANON_PLANE::XY) {
+			    STRAIGHT_FEED(line_number, P1x.NURBS_X, P1x.NURBS_Y, _pos_z, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w);
+			}
+		if(plane==CANON_PLANE::YZ) {
+			STRAIGHT_FEED(line_number, _pos_x, P1x.NURBS_X, P1x.NURBS_Y, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w);
+			}
+		if(plane==CANON_PLANE::XZ) {
+			STRAIGHT_FEED(line_number, P1x.NURBS_Y, _pos_y, P1x.NURBS_X, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w);
+			}
+		u = u + umax/div;
+    } 
+    A6 = nurbs_G6_Nmix_creator (umax,  k, n+1, knot_vector);
+    P1 = nurbs_G6_pointx(umax,k,nurbs_control_points,knot_vector,A6);	
+    //printf("%.3d P1  X: %8.4f Y: %8.4f pos_x: %8.4f pos_y: %8.4f pos_z: %8.4f (F: %s L: %d)\n",line_number,P1.NURBS_X,P1.NURBS_Y,_pos_x,_pos_y,_pos_z,__FILE__,__LINE__);
+    //STRAIGHT_FEED(line_number, P1.NURBS_X,P1.NURBS_Y, _pos_z, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w);
+    if(plane==CANON_PLANE::XY) {
+        STRAIGHT_FEED(line_number, P1.NURBS_X, P1.NURBS_Y, _pos_z, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w);
+    	}
+    if(plane==CANON_PLANE::YZ) {
+		STRAIGHT_FEED(line_number, _pos_x, P1.NURBS_X, P1.NURBS_Y, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w);
+    	}
+    if(plane==CANON_PLANE::XZ) {
+		STRAIGHT_FEED(line_number, P1.NURBS_Y, _pos_y, P1.NURBS_X, _pos_a, _pos_b, _pos_c, _pos_u, _pos_v, _pos_w);
+    	}
+    knot_vector.clear();
+	}
+
+//-----------------------------------------------------------------------------------------------------------------------------------------
 void ARC_FEED(int line_number,
               double first_end, double second_end, double first_axis,
               double second_axis, int rotation, double axis_end_point,
@@ -238,6 +622,11 @@ void STRAIGHT_FEED(int line_number,
     _pos_a=a; _pos_b=b; _pos_c=c;
     _pos_u=u; _pos_v=v; _pos_w=w;
     if(metric) { x /= 25.4; y /= 25.4; z /= 25.4; u /= 25.4; v /= 25.4; w /= 25.4; }
+    if(MoveBatch::active()) {
+        if(interp_error) return;
+        MoveBatch::append(MoveBatch::Feed, line_number, x, y, z, a, b, c, u, v, w);
+        return;
+    }
     maybe_new_line(line_number);
     if(interp_error) return;
     PyObject *result =
@@ -255,6 +644,11 @@ void STRAIGHT_TRAVERSE(int line_number,
     _pos_a=a; _pos_b=b; _pos_c=c;
     _pos_u=u; _pos_v=v; _pos_w=w;
     if(metric) { x /= 25.4; y /= 25.4; z /= 25.4; u /= 25.4; v /= 25.4; w /= 25.4; }
+    if(MoveBatch::active()) {
+        if(interp_error) return;
+        MoveBatch::append(MoveBatch::Traverse, line_number, x, y, z, a, b, c, u, v, w);
+        return;
+    }
     maybe_new_line(line_number);
     if(interp_error) return;
     PyObject *result =
@@ -320,7 +714,7 @@ void SET_TRAVERSE_RATE(double rate) {
     Py_XDECREF(result);
 }
 
-void SET_FEED_MODE(int spindle, int mode) {
+void SET_FEED_MODE(int /*spindle*/, int /*mode*/) {
 #if 0
     maybe_new_line();   
     if(interp_error) return;
@@ -331,18 +725,28 @@ void SET_FEED_MODE(int spindle, int mode) {
 #endif
 }
 
-void CHANGE_TOOL(int pocket) {
+void CHANGE_TOOL() {
+    if(MoveBatch::active()) {
+        if(interp_error) return;
+        MoveBatch::append(MoveBatch::ChangeTool, batch_line_number(),
+                     selected_tool, 0, 0, 0, 0, 0, 0, 0, 0);
+        return;
+    }
     maybe_new_line();
     if(interp_error) return;
-    PyObject *result = 
-        callmethod(callback, "change_tool", "i", pocket);
+    PyObject *result =
+        callmethod(callback, "change_tool", "i", selected_tool);
     if(result == NULL) interp_error ++;
     Py_XDECREF(result);
 }
 
-void CHANGE_TOOL_NUMBER(int pocket) {
+void CHANGE_TOOL_NUMBER(int /*pocket*/) {
     maybe_new_line();
     if(interp_error) return;
+}
+
+void RELOAD_TOOLDATA(void) {
+    return;
 }
 
 /* XXX: This needs to be re-thought.  Sometimes feed rate is not in linear
@@ -351,9 +755,30 @@ void CHANGE_TOOL_NUMBER(int pocket) {
  * time feed wrong anyway..
  */
 void SET_FEED_RATE(double rate) {
-    maybe_new_line();   
-    if(interp_error) return;
     if(metric) rate /= 25.4;
+    if(MoveBatch::active()) {
+        // Two departures here, both because the rate is already in every row.
+        //
+        // It does not flush. There is nothing a batch boundary would tell the
+        // consumer that the feedrate column has not. Cutting one is expensive
+        // on real files - CAM output with adaptive feed emits an F word every
+        // few moves, which would deliver the program in batches of a handful of
+        // rows and make batch mode *slower* than the per-move protocol it
+        // replaces (measured on 500k moves: 0.59x with the flush, 1.85x
+        // without).
+        //
+        // And it does not forward at all unless the rate moved - see
+        // MoveBatch::feed_rate for why the interpreter calls this so often.
+        //
+        // Neither affects arcs: ARC_FEED still flushes, and the arc path stages
+        // its segments at arc time with the rate current then, which is this
+        // one whether or not the callback that set it was suppressed.
+        if(!MoveBatch::feed_rate(rate)) return;
+        deliver_new_line(batch_line_number());
+    } else {
+        maybe_new_line();
+    }
+    if(interp_error) return;
     PyObject *result =
         callmethod(callback, "set_feed_rate", "f", rate);
     if(result == NULL) interp_error ++;
@@ -361,7 +786,14 @@ void SET_FEED_RATE(double rate) {
 }
 
 void DWELL(double time) {
-    maybe_new_line();   
+    if(MoveBatch::active()) {
+        if(interp_error) return;
+        // Appended, not flushed: a G81/G82 cycle emits one of these per hole.
+        MoveBatch::append(MoveBatch::Dwell, batch_line_number(),
+                     time, 0, 0, 0, 0, 0, 0, 0, 0);
+        return;
+    }
+    maybe_new_line();
     if(interp_error) return;
     PyObject *result =
         callmethod(callback, "dwell", "f", time);
@@ -378,9 +810,9 @@ void MESSAGE(char *comment) {
     Py_XDECREF(result);
 }
 
-void LOG(char *s) {}
-void LOGOPEN(char *f) {}
-void LOGAPPEND(char *f) {}
+void LOG(char * /*s*/) {}
+void LOGOPEN(char * /*f*/) {}
+void LOGAPPEND(char * /*f*/) {}
 void LOGCLOSE() {}
 
 void COMMENT(const char *comment) {
@@ -392,47 +824,73 @@ void COMMENT(const char *comment) {
     Py_XDECREF(result);
 }
 
-void SET_TOOL_TABLE_ENTRY(int pocket, int toolno, EmcPose offset, double diameter,
-                          double frontangle, double backangle, int orientation) {
+void SET_TOOL_TABLE_ENTRY(int /*pocket*/, int /*toolno*/, const EmcPose& /*offset*/, double /*diameter*/,
+                          double /*frontangle*/, double /*backangle*/, int /*orientation*/) {
 }
 
-void USE_TOOL_LENGTH_OFFSET(EmcPose offset) {
+void USE_TOOL_LENGTH_OFFSET(const EmcPose& offset) {
     tool_offset = offset;
+    if(MoveBatch::active()) {
+        if(interp_error) return;
+        if(metric) {
+            MoveBatch::append(MoveBatch::ToolOffset, batch_line_number(),
+                    offset.tran.x / 25.4, offset.tran.y / 25.4,
+                    offset.tran.z / 25.4,
+                    offset.a, offset.b, offset.c,
+                    offset.u / 25.4, offset.v / 25.4, offset.w / 25.4);
+        } else {
+            MoveBatch::append(MoveBatch::ToolOffset, batch_line_number(),
+                    offset.tran.x, offset.tran.y, offset.tran.z,
+                    offset.a, offset.b, offset.c,
+                    offset.u, offset.v, offset.w);
+        }
+        return;
+    }
     maybe_new_line();
     if(interp_error) return;
+    PyObject *result;
     if(metric) {
-        offset.tran.x /= 25.4; offset.tran.y /= 25.4; offset.tran.z /= 25.4;
-        offset.u /= 25.4; offset.v /= 25.4; offset.w /= 25.4; }
-    PyObject *result = callmethod(callback, "tool_offset", "ddddddddd", offset.tran.x, offset.tran.y, offset.tran.z,
-        offset.a, offset.b, offset.c, offset.u, offset.v, offset.w);
+        result = callmethod(callback, "tool_offset", "ddddddddd",
+                    offset.tran.x / 25.4, offset.tran.y / 25.4, offset.tran.z / 25.4,
+                    offset.a, offset.b, offset.c,
+                    offset.u / 25.4, offset.v / 25.4, offset.w / 25.4);
+    } else {
+        result = callmethod(callback, "tool_offset", "ddddddddd",
+                    offset.tran.x, offset.tran.y, offset.tran.z,
+                    offset.a, offset.b, offset.c,
+                    offset.u, offset.v, offset.w);
+    }
     if(result == NULL) interp_error ++;
     Py_XDECREF(result);
 }
 
-void SET_FEED_REFERENCE(double reference) { }
-void SET_CUTTER_RADIUS_COMPENSATION(double radius) {}
-void START_CUTTER_RADIUS_COMPENSATION(int direction) {}
-void STOP_CUTTER_RADIUS_COMPENSATION(int direction) {}
+void SET_FEED_REFERENCE(double /*reference*/) { }
+void SET_CUTTER_RADIUS_COMPENSATION(double /*radius*/) {}
+void START_CUTTER_RADIUS_COMPENSATION(int /*direction*/) {}
+void STOP_CUTTER_RADIUS_COMPENSATION(int /*direction*/) {}
 void START_SPEED_FEED_SYNCH() {}
-void START_SPEED_FEED_SYNCH(int spindle, double sync, bool vel) {}
+void START_SPEED_FEED_SYNCH(int /*spindle*/, double /*sync*/, bool /*vel*/) {}
 void STOP_SPEED_FEED_SYNCH() {}
-void START_SPINDLE_COUNTERCLOCKWISE(int spindle, int wait_for_at_speed) {}
-void START_SPINDLE_CLOCKWISE(int spindle, int wait_for_at_speed) {}
-void SET_SPINDLE_MODE(int spindle, double) {}
-void STOP_SPINDLE_TURNING(int spindle) {}
-void SET_SPINDLE_SPEED(int spindle, double rpm) {}
-void ORIENT_SPINDLE(int spindle, double d, int i) {}
-void WAIT_SPINDLE_ORIENT_COMPLETE(int s, double timeout) {}
+void START_SPINDLE_COUNTERCLOCKWISE(int /*spindle*/, int /*wait_for_at_speed*/) {}
+void START_SPINDLE_CLOCKWISE(int /*spindle*/, int /*wait_for_at_speed*/) {}
+void SET_SPINDLE_MODE(int /*spindle*/, double) {}
+void STOP_SPINDLE_TURNING(int /*spindle*/, int /*wait_for_at_speed*/) {}
+// Forwards nothing - it never has - but the value is worth carrying: recording
+// it here costs one store and gives the batch rows a spindle-speed column the
+// per-move protocol never had, without adding a callback or a flush point.
+void SET_SPINDLE_SPEED(int spindle, double rpm) {
+    if(spindle == 0) MoveBatch::spindle_speed(rpm);
+}
+void ORIENT_SPINDLE(int /*spindle*/, double /*d*/, int /*i*/) {}
+void WAIT_SPINDLE_ORIENT_COMPLETE(int /*s*/, double /*timeout*/) {}
 void PROGRAM_STOP() {}
 void PROGRAM_END() {}
 void FINISH() {}
 void ON_RESET() {}
 void PALLET_SHUTTLE() {}
-void SELECT_TOOL(int tool) {}
-void SELECT_POCKET(int pocket, int tool) {}
-void UPDATE_TAG(StateTag tag) {}
+void SELECT_TOOL(int tool) {selected_tool = tool;}
+void UPDATE_TAG(const StateTag& /*tag*/) {}
 void OPTIONAL_PROGRAM_STOP() {}
-void START_CHANGE() {}
 int  GET_EXTERNAL_TC_FAULT() {return 0;}
 int  GET_EXTERNAL_TC_REASON() {return 0;}
 
@@ -451,48 +909,51 @@ extern bool GET_BLOCK_DELETE(void) {
     return bd;
 }
 
-void CANON_ERROR(const char *fmt, ...) {};
-void CLAMP_AXIS(CANON_AXIS axis) {}
+void CANON_ERROR(const char * /*fmt*/, ...) {};
+void CLAMP_AXIS(CANON_AXIS /*axis*/) {}
 bool GET_OPTIONAL_PROGRAM_STOP() { return false;}
-void SET_OPTIONAL_PROGRAM_STOP(bool state) {}
+void SET_OPTIONAL_PROGRAM_STOP(bool /*state*/) {}
 void SPINDLE_RETRACT_TRAVERSE() {}
 void SPINDLE_RETRACT() {}
 void STOP_CUTTER_RADIUS_COMPENSATION() {}
 void USE_NO_SPINDLE_FORCE() {}
-void SET_BLOCK_DELETE(bool enabled) {}
+void SET_BLOCK_DELETE(bool /*enabled*/) {}
 
 void DISABLE_FEED_OVERRIDE() {}
 void DISABLE_FEED_HOLD() {}
 void ENABLE_FEED_HOLD() {}
-void DISABLE_SPEED_OVERRIDE(int spindle) {}
+void DISABLE_SPEED_OVERRIDE(int /*spindle*/) {}
 void ENABLE_FEED_OVERRIDE() {}
-void ENABLE_SPEED_OVERRIDE(int spindle) {}
+void ENABLE_SPEED_OVERRIDE(int /*spindle*/) {}
 void MIST_OFF() {}
 void FLOOD_OFF() {}
 void MIST_ON() {}
 void FLOOD_ON() {}
-void CLEAR_AUX_OUTPUT_BIT(int bit) {}
-void SET_AUX_OUTPUT_BIT(int bit) {}
-void SET_AUX_OUTPUT_VALUE(int index, double value) {}
-void CLEAR_MOTION_OUTPUT_BIT(int bit) {}
-void SET_MOTION_OUTPUT_BIT(int bit) {}
-void SET_MOTION_OUTPUT_VALUE(int index, double value) {}
+void CLEAR_AUX_OUTPUT_BIT(int /*bit*/) {}
+void SET_AUX_OUTPUT_BIT(int /*bit*/) {}
+void SET_AUX_OUTPUT_VALUE(int /*index*/, double /*value*/) {}
+void CLEAR_MOTION_OUTPUT_BIT(int /*bit*/) {}
+void SET_MOTION_OUTPUT_BIT(int /*bit*/) {}
+void SET_MOTION_OUTPUT_VALUE(int /*index*/, double /*value*/) {}
 void TURN_PROBE_ON() {}
 void TURN_PROBE_OFF() {}
-int UNLOCK_ROTARY(int line_no, int joint_num) {return 0;}
-int LOCK_ROTARY(int line_no, int joint_num) {return 0;}
-void INTERP_ABORT(int reason,const char *message) {}
-void PLUGIN_CALL(int len, const char *call) {}
-void IO_PLUGIN_CALL(int len, const char *call) {}
+int UNLOCK_ROTARY(int /*line_no*/, int /*joint_num*/) {return 0;}
+int LOCK_ROTARY(int /*line_no*/, int /*joint_num*/) {return 0;}
+void INTERP_ABORT(int /*reason*/, const char * /*message*/) {}
 
 void STRAIGHT_PROBE(int line_number, 
                     double x, double y, double z, 
                     double a, double b, double c,
-                    double u, double v, double w, unsigned char probe_type) {
+                    double u, double v, double w, unsigned char /*probe_type*/) {
     _pos_x=x; _pos_y=y; _pos_z=z; 
     _pos_a=a; _pos_b=b; _pos_c=c;
     _pos_u=u; _pos_v=v; _pos_w=w;
     if(metric) { x /= 25.4; y /= 25.4; z /= 25.4; u /= 25.4; v /= 25.4; w /= 25.4; }
+    if(MoveBatch::active()) {
+        if(interp_error) return;
+        MoveBatch::append(MoveBatch::Probe, line_number, x, y, z, a, b, c, u, v, w);
+        return;
+    }
     maybe_new_line(line_number);
     if(interp_error) return;
     PyObject *result =
@@ -503,8 +964,16 @@ void STRAIGHT_PROBE(int line_number,
 
 }
 void RIGID_TAP(int line_number,
-               double x, double y, double z, double scale) {
+               double x, double y, double z, double /*scale*/) {
     if(metric) { x /= 25.4; y /= 25.4; z /= 25.4; }
+    if(MoveBatch::active()) {
+        if(interp_error) return;
+        // a..w are zero, exactly the arguments the legacy `rigid_tap` callback
+        // did not have; the consumer joins x,y,z to the chain point's a..w as
+        // GLCanon.rigid_tap does.
+        MoveBatch::append(MoveBatch::RigidTap, line_number, x, y, z, 0, 0, 0, 0, 0, 0);
+        return;
+    }
     maybe_new_line(line_number);
     if(interp_error) return;
     PyObject *result =
@@ -545,33 +1014,42 @@ void SET_PARAMETER_FILE_NAME(const char *name)
 void GET_EXTERNAL_PARAMETER_FILE_NAME(char *name, int max_size) {
     PyObject *result = PyObject_GetAttrString(callback, "parameter_file");
     if(!result) { name[0] = 0; return; }
-    char *s = (char*)PyStr_AsString(result);
+    char *s = (char*)PyUnicode_AsUTF8(result);
     if(!s) { name[0] = 0; return; }
     memset(name, 0, max_size);
     strncpy(name, s, max_size - 1);
 }
 CANON_UNITS GET_EXTERNAL_LENGTH_UNIT_TYPE() { return CANON_UNITS_INCHES; }
 CANON_TOOL_TABLE GET_EXTERNAL_TOOL_TABLE(int pocket) {
-    CANON_TOOL_TABLE t = {-1,-1,{{0,0,0},0,0,0,0,0,0},0,0,0,0};
-    if(interp_error) return t;
+    CANON_TOOL_TABLE tdata = {-1,-1,{{0,0,0},0,0,0,0,0,0},0,0,0,0,{}};
+    if(interp_error) return tdata;
     PyObject *result =
         callmethod(callback, "get_tool", "i", pocket);
     if(result == NULL ||
-       !PyArg_ParseTuple(result, "iddddddddddddi", &t.toolno, &t.offset.tran.x, &t.offset.tran.y, &t.offset.tran.z,
-                          &t.offset.a, &t.offset.b, &t.offset.c, &t.offset.u, &t.offset.v, &t.offset.w,
-                          &t.diameter, &t.frontangle, &t.backangle, &t.orientation))
-            interp_error ++;
-
+       !PyArg_ParseTuple(result, "iddddddddddddi",
+             &tdata.toolno,
+             &tdata.offset.tran.x, &tdata.offset.tran.y, &tdata.offset.tran.z,
+             &tdata.offset.a,      &tdata.offset.b,      &tdata.offset.c,
+             &tdata.offset.u,      &tdata.offset.v,      &tdata.offset.w,
+             &tdata.diameter,      &tdata.frontangle,    &tdata.backangle,
+             &tdata.orientation)) {
+       interp_error ++;
+    }
     Py_XDECREF(result);
-    return t;
+    return tdata;
 }
 
-int GET_EXTERNAL_DIGITAL_INPUT(int index, int def) { return def; }
-double GET_EXTERNAL_ANALOG_INPUT(int index, double def) { return def; }
-int WAIT(int index, int input_type, int wait_type, double timeout) { return 0;}
+int GET_EXTERNAL_DIGITAL_INPUT(int /*index*/, int def) { return def; }
+double GET_EXTERNAL_ANALOG_INPUT(int /*index*/, double def) { return def; }
+int WAIT(int /*index*/, int /*input_type*/, int /*wait_type*/, double /*timeout*/) { return 0;}
 
 static void user_defined_function(int num, double arg1, double arg2) {
     if(interp_error) return;
+    if(MoveBatch::active()) {
+        MoveBatch::append(MoveBatch::M1xx, batch_line_number(),
+                     num, arg1, arg2, 0, 0, 0, 0, 0, 0);
+        return;
+    }
     maybe_new_line();
     PyObject *result =
         callmethod(callback, "user_defined_function",
@@ -580,7 +1058,7 @@ static void user_defined_function(int num, double arg1, double arg2) {
     Py_XDECREF(result);
 }
 
-void SET_FEED_REFERENCE(CANON_FEED_REFERENCE ref) {}
+void SET_FEED_REFERENCE(CANON_FEED_REFERENCE /*ref*/) {}
 int GET_EXTERNAL_QUEUE_EMPTY() { return true; }
 CANON_DIRECTION GET_EXTERNAL_SPINDLE(int) { return CANON_STOPPED; }
 int GET_EXTERNAL_TOOL_SLOT() { return 0; }
@@ -589,14 +1067,13 @@ double GET_EXTERNAL_FEED_RATE() { return 1; }
 double GET_EXTERNAL_TRAVERSE_RATE() { return 0; }
 int GET_EXTERNAL_FLOOD() { return 0; }
 int GET_EXTERNAL_MIST() { return 0; }
-CANON_PLANE GET_EXTERNAL_PLANE() { return CANON_PLANE_XY; }
-double GET_EXTERNAL_SPEED(int spindle) { return 0; }
-int GET_EXTERNAL_POCKETS_MAX() { return CANON_POCKETS_MAX; }
+CANON_PLANE GET_EXTERNAL_PLANE() { return CANON_PLANE::XY; }
+double GET_EXTERNAL_SPEED(int /*spindle*/) { return 0; }
 void DISABLE_ADAPTIVE_FEED() {} 
 void ENABLE_ADAPTIVE_FEED() {} 
 
 int GET_EXTERNAL_FEED_OVERRIDE_ENABLE() {return 1;}
-int GET_EXTERNAL_SPINDLE_OVERRIDE_ENABLE(int spindle) {return 1;}
+int GET_EXTERNAL_SPINDLE_OVERRIDE_ENABLE(int /*spindle*/) {return 1;}
 int GET_EXTERNAL_ADAPTIVE_FEED_ENABLE() {return 0;}
 int GET_EXTERNAL_FEED_HOLD_ENABLE() {return 1;}
 
@@ -620,8 +1097,8 @@ int GET_EXTERNAL_AXIS_MASK() {
     PyObject *result =
         callmethod(callback, "get_axis_mask", "");
     if(!result) { interp_error ++; return 7 /* XYZABC */; }
-    if(!PyInt_Check(result)) { interp_error ++; return 7 /* XYZABC */; }
-    int mask = PyInt_AsLong(result);
+    if(!PyLong_Check(result)) { interp_error ++; return 7 /* XYZABC */; }
+    int mask = PyLong_AsLong(result);
     Py_DECREF(result);
     return mask;
 }
@@ -654,8 +1131,8 @@ double GET_EXTERNAL_TOOL_LENGTH_WOFFSET() {
     return tool_offset.w;
 }
 
-static bool PyInt_CheckAndError(const char *func, PyObject *p)  {
-    if(PyInt_Check(p)) return true;
+static bool PyLong_CheckAndError(const char *func, PyObject *p)  {
+    if(PyLong_Check(p)) return true;
     PyErr_Format(PyExc_TypeError,
             "%s: Expected int, got %s", func, Py_TYPE(p)->tp_name);
     return false;
@@ -714,17 +1191,18 @@ static bool check_abort() {
 USER_DEFINED_FUNCTION_TYPE USER_DEFINED_FUNCTION[USER_DEFINED_FUNCTION_NUM];
 
 CANON_MOTION_MODE motion_mode;
-void SET_MOTION_CONTROL_MODE(CANON_MOTION_MODE mode, double tolerance) { motion_mode = mode; }
-void SET_MOTION_CONTROL_MODE(double tolerance) { }
+/* G64_R_PLANNER: preview module ignores the planner-mode args (no motion) */
+void SET_MOTION_CONTROL_MODE(CANON_MOTION_MODE mode, double /*tolerance*/, int /*planner_type*/, double /*scurve_peak_scale*/) { motion_mode = mode; }
+void SET_MOTION_CONTROL_MODE(double /*tolerance*/) { }
 void SET_MOTION_CONTROL_MODE(CANON_MOTION_MODE mode) { motion_mode = mode; }
 CANON_MOTION_MODE GET_EXTERNAL_MOTION_CONTROL_MODE() { return motion_mode; }
-void SET_NAIVECAM_TOLERANCE(double tolerance) { }
+void SET_NAIVECAM_TOLERANCE(double /*tolerance*/) { }
 
 #define RESULT_OK (result == INTERP_OK || result == INTERP_EXECUTE_FINISH)
-static PyObject *parse_file(PyObject *self, PyObject *args) {
+static PyObject *parse_file(PyObject * /*self*/, PyObject *args) {
     char *f;
-    char *unitcode=0, *initcode=0, *interpname=0;
-    PyObject *initcodes=0;
+    char *unitcode=NULL, *initcode=NULL, *interpname=NULL;
+    PyObject *initcodes=NULL;
     int error_line_offset = 0;
     struct timeval t0, t1;
     int wait = 1;
@@ -739,9 +1217,16 @@ static PyObject *parse_file(PyObject *self, PyObject *args) {
             return NULL;
     }
 
+    // Protocol selection, once, before anything is interpreted: a mode that
+    // could flip mid-parse would leave the consumer's program half in each
+    // protocol, and a per-call attribute check would cost more than batching
+    // saves.
+    if(!MoveBatch::arm(callback)) return NULL;
+    last_delivered_sequence_number = -1;
+
     if(pinterp) {
         delete pinterp;
-        pinterp = 0;
+        pinterp = NULL;
     }
     if(interpname && *interpname)
         pinterp = interp_from_shlib(interpname);
@@ -771,7 +1256,7 @@ static PyObject *parse_file(PyObject *self, PyObject *args) {
         {
             PyObject *item = PyList_GetItem(initcodes, i);
             if(!item) return NULL;
-            const char *code = PyStr_AsString(item);
+            const char *code = PyUnicode_AsUTF8(item);
             if(!code) return NULL;
             result = pinterp->read(code);
             if(!RESULT_OK) goto out_error;
@@ -783,16 +1268,23 @@ static PyObject *parse_file(PyObject *self, PyObject *args) {
         if(!RESULT_OK) goto out_error;
         result = pinterp->execute();
     }
+
     if(initcode && RESULT_OK) {
         result = pinterp->read(initcode);
         if(!RESULT_OK) goto out_error;
         result = pinterp->execute();
     }
+
     while(!interp_error && RESULT_OK) {
         error_line_offset = 1;
         result = pinterp->read();
         gettimeofday(&t1, NULL);
         if(t1.tv_sec > t0.tv_sec + wait) {
+            // Bounds how stale a batch consumer's progress can get, and keeps
+            // check_abort() - which pumps AXIS's event loop - from running with
+            // a pending exception raised by the flush.
+            MoveBatch::flush();
+            if(interp_error) break;
             if(check_abort()) return NULL;
             t0 = t1;
         }
@@ -811,6 +1303,13 @@ out_error:
         if(!PyErr_Occurred()) {
             PyErr_Format(PyExc_RuntimeError,
                     "interp_error > 0 but no Python exception set");
+        } else {
+            // seems a PyErr_Ocurred(), but no exception was set ?
+            // so return error info that can be caught and handled
+            PyErr_Format(PyExc_RuntimeError,"parse_file interp_error");
+            fprintf(stderr,"!!!%s: parse_file() f=%s\n"
+                    "!!!interp_error=%d result=%d last_sequence_number=%d\n",
+                    __FILE__,f,interp_error,result,last_sequence_number);
         }
         return NULL;
     }
@@ -818,8 +1317,8 @@ out_error:
     maybe_new_line();
     if(PyErr_Occurred()) { interp_error = 1; goto out_error; }
     PyObject *retval = PyTuple_New(2);
-    PyTuple_SetItem(retval, 0, PyInt_FromLong(result));
-    PyTuple_SetItem(retval, 1, PyInt_FromLong(last_sequence_number + error_line_offset));
+    PyTuple_SetItem(retval, 0, PyLong_FromLong(result));
+    PyTuple_SetItem(retval, 1, PyLong_FromLong(last_sequence_number + error_line_offset));
     return retval;
 }
 
@@ -827,14 +1326,14 @@ out_error:
 static int maxerror = -1;
 
 static char savedError[LINELEN+1];
-static PyObject *rs274_strerror(PyObject *s, PyObject *o) {
+static PyObject *rs274_strerror(PyObject * /*s*/, PyObject *o) {
     int err;
     if(!PyArg_ParseTuple(o, "i", &err)) return nullptr;
     pinterp->error_text(err, savedError, LINELEN);
-    return PyStr_FromString(savedError);
+    return PyUnicode_FromString(savedError);
 }
 
-static PyObject *rs274_calc_extents(PyObject *self, PyObject *args) {
+static PyObject *rs274_calc_extents(PyObject * /*self*/, PyObject *args) {
     double min_x = 9e99, min_y = 9e99, min_z = 9e99,
            min_xt = 9e99, min_yt = 9e99, min_zt = 9e99,
            max_x = -9e99, max_y = -9e99, max_z = -9e99,
@@ -897,17 +1396,10 @@ static PyObject *rs274_calc_extents(PyObject *self, PyObject *args) {
         min_xt, min_yt, min_zt,  max_xt, max_yt, max_zt);
 }
 
-#if PY_VERSION_HEX < 0x02050000
-#define PyObject_GetAttrString(o,s) \
-    PyObject_GetAttrString((o),const_cast<char*>((s)))
-#define PyArg_VaParse(o,f,a) \
-    PyArg_VaParse((o),const_cast<char*>((f)),(a))
-#endif
-
 static bool get_attr(PyObject *o, const char *attr_name, int *v) {
     PyObject *attr = PyObject_GetAttrString(o, attr_name);
-    if(attr && PyInt_CheckAndError(attr_name, attr)) {
-        *v = PyInt_AsLong(attr);
+    if(attr && PyLong_CheckAndError(attr_name, attr)) {
+        *v = PyLong_AsLong(attr);
         Py_DECREF(attr);
         return true;
     }
@@ -949,7 +1441,7 @@ static void rotate(double &x, double &y, double c, double s) {
     x = tx;
 }
 
-static PyObject *rs274_arc_to_segments(PyObject *self, PyObject *args) {
+static PyObject *rs274_arc_to_segments(PyObject * /*self*/, PyObject *args) {
     PyObject *canon;
     double x1, y1, cx, cy, z1, a, b, c, u, v, w;
     double o[9], n[9], g5xoffset[9], g92offset[9];
@@ -1007,11 +1499,17 @@ static PyObject *rs274_arc_to_segments(PyObject *self, PyObject *args) {
 
     double theta1 = atan2(o[Y]-cy, o[X]-cx);
     double theta2 = atan2(n[Y]-cy, n[X]-cx);
-
-    if(rot < 0) {
-        while(theta2 - theta1 > -CIRCLE_FUZZ) theta2 -= 2*M_PI;
-    } else {
-        while(theta2 - theta1 < CIRCLE_FUZZ) theta2 += 2*M_PI;
+    /* Issue #1528 1/2/22 andypugh */
+    /*_posemath checks for small arcs too, but uses config units */
+    double len = hypot(o[X]-n[X], o[Y]-n[Y]) * (25.4 * GET_EXTERNAL_LENGTH_UNITS());
+    /* If the signs of the angles differ, make them the same to allow monotonic progress through the arc */
+    /* If start and end points are nearly identical, then interpret as a full turn */
+    if(rot < 0) { // CW G2
+        if (theta1 < theta2) theta2 -= 2*M_PI;
+        if (len < CART_FUZZ) theta2 -= 2*M_PI;
+    } else { // CCW G3
+        if (theta1 > theta2) theta2 += 2*M_PI;
+        if (len < CART_FUZZ) theta2 += 2*M_PI;
     }
 
     // if multi-turn, add the right number of full circles
@@ -1062,7 +1560,7 @@ static PyMethodDef gcode_methods[] = {
         "Calculate information about extents of gcode"},
     {"arc_to_segments", (PyCFunction)rs274_arc_to_segments, METH_VARARGS,
         "Convert an arc to straight segments"},
-    {NULL}
+    {}
 };
 
 static struct PyModuleDef gcode_moduledef = {
@@ -1070,18 +1568,23 @@ static struct PyModuleDef gcode_moduledef = {
     "gcode",                                  /* m_name    */
     "Interface to EMC rs274ngc interpreter",  /* m_doc     */
     -1,                                       /* m_size    */
-    gcode_methods                             /* m_methods */
+    gcode_methods,                            /* m_methods */
+    NULL,                                     /* m_slots   */
+    NULL,                                     /* m_traverse*/
+    NULL,                                     /* m_clear   */
+    NULL,                                     /* m_free    */
 };
 
-MODULE_INIT_FUNC(gcode)
+PyMODINIT_FUNC PyInit_gcode(void);
+PyMODINIT_FUNC PyInit_gcode(void)
 {
 
     PyObject *m = PyModule_Create(&gcode_moduledef);
     PyType_Ready(&LineCodeType);
     PyModule_AddObject(m, "linecode", (PyObject*)&LineCodeType);
-    PyObject_SetAttrString(m, "MAX_ERROR", PyInt_FromLong(maxerror));
+    PyObject_SetAttrString(m, "MAX_ERROR", PyLong_FromLong(maxerror));
     PyObject_SetAttrString(m, "MIN_ERROR",
-            PyInt_FromLong(INTERP_MIN_ERROR));
+            PyLong_FromLong(INTERP_MIN_ERROR));
     return m;
 }
 // vim:ts=8:sts=4:sw=4:et:

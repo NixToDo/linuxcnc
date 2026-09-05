@@ -32,8 +32,8 @@
 
 #include <modbus.h>
 
-#include "hal.h"
-#include "rtapi.h"
+#include <hal.h>
+#include <rtapi.h>
 
 
 // If a modbus transaction fails, retry this many times before giving up.
@@ -41,15 +41,15 @@
 
 
 typedef struct {
-    hal_float_t *period;
+    hal_real_t period;
 
-    hal_float_t *speed_cmd;
-    hal_float_t *freq_cmd;
-    hal_bit_t *at_speed;
+    hal_real_t speed_cmd;
+    hal_real_t freq_cmd;
+    hal_bool_t at_speed;
 
-    hal_bit_t	*spindle_on;
+    hal_bool_t spindle_on;
 
-    hal_u32_t *modbus_errors;
+    hal_uint_t modbus_errors;
 } haldata_t;
 
 haldata_t *haldata;
@@ -64,9 +64,18 @@ typedef struct {
     // Multiply the uint16 value read by this multiplier to get the human-
     // readable value.
     float multiplier;
-
-    hal_float_t *hal_pin;
+    int type;
+    union {
+        hal_real_t hal_pin_float;
+        hal_uint_t hal_pin_u32;
+    };
 } modbus_register_t;
+
+typedef enum {
+    REGISTER_UNKNOWN = 0,
+    REGISTER_FLOAT = 1,
+    REGISTER_U32 = 2,
+} register_type_t;
 
 int num_modbus_registers = 0;
 modbus_register_t *modbus_register;
@@ -82,18 +91,18 @@ float min_freq = 0.0;
 int baud;
 
 static struct option long_options[] = {
-    {"device", 1, 0, 'd'},
-    {"rate", 1, 0, 'r'},
-    {"bits", 1, 0, 'b'},
-    {"parity", 1, 0, 'p'},
-    {"stopbits", 1, 0, 's'},
-    {"target", 1, 0, 't'},
-    {"verbose", 0, 0, 'v'},
-    {"help", 0, 0, 'h'},
-    {"motor-max-speed", 1, 0, 'S'},
-    {"max-frequency", 1, 0, 'F'},
-    {"min-frequency", 1, 0, 'f'},
-    {0,0,0,0}
+    {"device", 1, NULL, 'd'},
+    {"rate", 1, NULL, 'r'},
+    {"bits", 1, NULL, 'b'},
+    {"parity", 1, NULL, 'p'},
+    {"stopbits", 1, NULL, 's'},
+    {"target", 1, NULL, 't'},
+    {"verbose", 0, NULL, 'v'},
+    {"help", 0, NULL, 'h'},
+    {"motor-max-speed", 1, NULL, 'S'},
+    {"max-frequency", 1, NULL, 'F'},
+    {"min-frequency", 1, NULL, 'f'},
+    {NULL,0,NULL,0}
 };
 
 static char *option_string = "d:r:b:p:s:t:vhS:F:f:";
@@ -108,12 +117,14 @@ static char *stopstrings[] = {"1", "2", NULL};
 
 
 static void quit(int sig) {
+    (void)sig;
     done = 1;
 }
 
 
 int match_string(char *string, char **matches) {
-    int len, which, match;
+    size_t len;
+    int which, match;
     which=0;
     match=-1;
     if ((matches==NULL) || (string==NULL)) return -1;
@@ -130,6 +141,7 @@ int match_string(char *string, char **matches) {
 
 
 void usage(int argc, char **argv) {
+    (void)argc;
     printf("Usage:  %s [ARGUMENTS]\n", argv[0]);
     printf(
         "\n"
@@ -195,7 +207,7 @@ int set_motor_on_forward(modbus_t *mb) {
             return 0;
         }
         fprintf(stderr, "%s: error writing %u to register 0x%04x: %s\n", __func__, val, addr, modbus_strerror(errno));
-        *haldata->modbus_errors = *haldata->modbus_errors + 1;
+        hal_set_ui32(haldata->modbus_errors, hal_get_ui32(haldata->modbus_errors) + 1);
     }
     return -1;
 }
@@ -213,7 +225,7 @@ int set_motor_off(modbus_t *mb) {
             return 0;
         }
         fprintf(stderr, "%s: error writing %u to register 0x%04x: %s\n", __func__, val, addr, modbus_strerror(errno));
-        *haldata->modbus_errors = *haldata->modbus_errors + 1;
+        hal_set_ui32(haldata->modbus_errors, hal_get_ui32(haldata->modbus_errors) + 1);
     }
     return -1;
 }
@@ -232,7 +244,7 @@ int set_motor_frequency(modbus_t *mb, float freq) {
             return 0;
         }
         fprintf(stderr, "%s: error writing %u to register 0x%04x: %s\n", __func__, val, addr, modbus_strerror(errno));
-        *haldata->modbus_errors = *haldata->modbus_errors + 1;
+        hal_set_ui32(haldata->modbus_errors, hal_get_ui32(haldata->modbus_errors) + 1);
     }
     return -1;
 }
@@ -246,11 +258,18 @@ int read_modbus_register(modbus_t *mb, modbus_register_t *reg) {
         hy_modbus_sleep();
         r = modbus_read_registers(mb, reg->address, 1, &data);
         if (r == 1) {
-            *reg->hal_pin = data * reg->multiplier;
+            switch (reg->type) {
+            case REGISTER_FLOAT:
+                hal_set_real(reg->hal_pin_float, data * reg->multiplier);
+                break;
+            case REGISTER_U32:
+                hal_set_ui32(reg->hal_pin_u32, data);
+                break;
+            }
             return 0;
         }
         fprintf(stderr, "%s: error reading %s (register 0x%04x): %s\n", __func__, reg->name, reg->address, modbus_strerror(errno));
-        *haldata->modbus_errors = *haldata->modbus_errors + 1;
+        hal_set_ui32(haldata->modbus_errors, hal_get_ui32(haldata->modbus_errors) + 1);
     }
     return -1;
 }
@@ -263,13 +282,14 @@ void read_modbus_registers(modbus_t *mb) {
 }
 
 
-modbus_register_t *add_modbus_register(modbus_t *mb, int address, const char *pin_name, float multiplier) {
+modbus_register_t *add_modbus_register_float(modbus_t *mb, int address, const char *pin_name, float multiplier) {
     int r;
     modbus_register_t *reg;
 
     reg = &modbus_register[num_modbus_registers];
+    reg->type = REGISTER_FLOAT;
 
-    r = hal_pin_float_newf(HAL_OUT, &reg->hal_pin, hal_comp_id, "%s.%s", modname, pin_name);
+    r = hal_pin_new_real(hal_comp_id, HAL_OUT, &reg->hal_pin_float, 0.0, "%s.%s", modname, pin_name);
     if (r != 0) {
         return NULL;
     }
@@ -277,6 +297,31 @@ modbus_register_t *add_modbus_register(modbus_t *mb, int address, const char *pi
     reg->address = address;
     reg->name = pin_name;
     reg->multiplier = multiplier;
+
+    read_modbus_register(mb, reg);
+
+    num_modbus_registers ++;
+
+    return reg;
+}
+
+
+modbus_register_t *add_modbus_register_u32(modbus_t *mb, int address, const char *pin_name, float multiplier) {
+    int r;
+    modbus_register_t *reg;
+    (void)multiplier;
+
+    reg = &modbus_register[num_modbus_registers];
+    reg->type = REGISTER_U32;
+
+    r = hal_pin_new_ui32(hal_comp_id, HAL_OUT, &reg->hal_pin_u32, 0, "%s.%s", modname, pin_name);
+    if (r != 0) {
+        return NULL;
+    }
+
+    reg->address = address;
+    reg->name = pin_name;
+    reg->multiplier = 0;
 
     read_modbus_register(mb, reg);
 
@@ -479,7 +524,9 @@ int main(int argc, char **argv) {
         // Set the response timeout.
         t.tv_sec = 0;
         t.tv_usec = 16 * 1000;
-#if (LIBMODBUS_VERSION_CHECK(3, 1, 2))
+// Cppcheck fails to parse the function-like macro
+//#if (LIBMODBUS_VERSION_CHECK(3, 1, 2))
+#if LIBMODBUS_VERSION_HEX >= 0x030102
         modbus_set_response_timeout(mb, t.tv_sec, t.tv_usec);
 #else
         modbus_set_response_timeout(mb, &t);
@@ -487,7 +534,9 @@ int main(int argc, char **argv) {
 
         // Disable the byte timeout so it just waits for the complete
         // response timeout instead.
-#if (LIBMODBUS_VERSION_CHECK(3, 1, 2))
+// Cppcheck fails to parse the function-like macro
+//#if (LIBMODBUS_VERSION_CHECK(3, 1, 2))
+#if LIBMODBUS_VERSION_HEX >= 0x030102
         t.tv_sec = 0;
         t.tv_usec = 0;
         modbus_set_byte_timeout(mb, t.tv_sec, t.tv_usec);
@@ -515,95 +564,92 @@ int main(int argc, char **argv) {
         goto out_close;
     }
 
-    haldata = (haldata_t *)hal_malloc(sizeof(haldata_t));
+    haldata = (haldata_t *)hal_malloc(sizeof(*haldata));
     if (haldata == NULL) {
         printf("%s: ERROR: unable to allocate shared memory\n", modname);
         retval = -1;
         goto out_closeHAL;
     }
 
-    retval = hal_pin_float_newf(HAL_IN, &(haldata->period), hal_comp_id, "%s.period-seconds", modname);
+    retval = hal_pin_new_real(hal_comp_id, HAL_IN, &(haldata->period), 0.1, "%s.period-seconds", modname);
     if (retval != 0) goto out_closeHAL;
 
-    retval = hal_pin_float_newf(HAL_IN, &(haldata->speed_cmd), hal_comp_id, "%s.speed-cmd", modname);
+    retval = hal_pin_new_real(hal_comp_id, HAL_IN, &(haldata->speed_cmd), 0.0, "%s.speed-cmd", modname);
     if (retval != 0) goto out_closeHAL;
 
-    retval = hal_pin_float_newf(HAL_OUT, &(haldata->freq_cmd), hal_comp_id, "%s.freq-cmd", modname);
+    retval = hal_pin_new_real(hal_comp_id, HAL_OUT, &(haldata->freq_cmd), 0.0, "%s.freq-cmd", modname);
     if (retval != 0) goto out_closeHAL;
 
-    retval = hal_pin_bit_newf(HAL_OUT, &(haldata->at_speed), hal_comp_id, "%s.at-speed", modname);
+    retval = hal_pin_new_bool(hal_comp_id, HAL_OUT, &(haldata->at_speed), 0, "%s.at-speed", modname);
     if (retval != 0) goto out_closeHAL;
 
-    retval = hal_pin_bit_newf(HAL_IN, &(haldata->spindle_on), hal_comp_id, "%s.spindle-on", modname);
+    retval = hal_pin_new_bool(hal_comp_id, HAL_IN, &(haldata->spindle_on), 0, "%s.spindle-on", modname);
     if (retval != 0) goto out_closeHAL;
 
-    retval = hal_pin_u32_newf(HAL_OUT, &(haldata->modbus_errors), hal_comp_id, "%s.modbus-errors", modname);
+    retval = hal_pin_new_ui32(hal_comp_id, HAL_OUT, &(haldata->modbus_errors), 0, "%s.modbus-errors", modname);
     if (retval != 0) goto out_closeHAL;
 
-    *haldata->period = 0.1;
-
-    *haldata->freq_cmd = 0.0;
-    *haldata->at_speed = 0;
-
-    *haldata->modbus_errors = 0;
-
-    modbus_register = (modbus_register_t *)hal_malloc(20 * sizeof(modbus_register_t));
+    modbus_register = (modbus_register_t *)hal_malloc(20 * sizeof(*modbus_register));
     if (modbus_register == NULL) {
         printf("%s: ERROR: unable to allocate memory\n", modname);
         retval = -1;
         goto out_closeHAL;
     }
 
-    if (add_modbus_register(mb, 0x3000, "freq-fb", 0.01) == NULL) {
+    if (add_modbus_register_float(mb, 0x3000, "freq-fb", 0.01) == NULL) {
         goto out_closeHAL;
     }
 
-    if (add_modbus_register(mb, 0x3002, "dc-bus-voltage", 0.1) == NULL) {
+    if (add_modbus_register_float(mb, 0x3002, "dc-bus-voltage", 0.1) == NULL) {
         goto out_closeHAL;
     }
 
-    if (add_modbus_register(mb, 0x3003, "output-voltage", 1.0) == NULL) {
+    if (add_modbus_register_float(mb, 0x3003, "output-voltage", 1.0) == NULL) {
         goto out_closeHAL;
     }
 
-    if (add_modbus_register(mb, 0x3004, "output-current", 1.0) == NULL) {
+    if (add_modbus_register_float(mb, 0x3004, "output-current", 1.0) == NULL) {
         goto out_closeHAL;
     }
 
-    speed_fb_reg = add_modbus_register(mb, 0x3005, "speed-fb", 1.0);
+    speed_fb_reg = add_modbus_register_float(mb, 0x3005, "speed-fb", 1.0);
     if (speed_fb_reg == NULL) {
         goto out_closeHAL;
     }
 
-    if (add_modbus_register(mb, 0x3006, "output-power", 1.0) == NULL) {
+    if (add_modbus_register_float(mb, 0x3006, "output-power", 1.0) == NULL) {
         goto out_closeHAL;
     }
 
-    if (add_modbus_register(mb, 0x300a, "input-terminal", 1.0) == NULL) {
+    if (add_modbus_register_float(mb, 0x300a, "input-terminal", 1.0) == NULL) {
         goto out_closeHAL;
     }
 
-    if (add_modbus_register(mb, 0x300b, "output-terminal", 1.0) == NULL) {
+    if (add_modbus_register_float(mb, 0x300b, "output-terminal", 1.0) == NULL) {
         goto out_closeHAL;
     }
 
-    if (add_modbus_register(mb, 0x300c, "AI1", 1.0) == NULL) {
+    if (add_modbus_register_float(mb, 0x300c, "AI1", 1.0) == NULL) {
         goto out_closeHAL;
     }
 
-    if (add_modbus_register(mb, 0x300d, "AI2", 1.0) == NULL) {
+    if (add_modbus_register_float(mb, 0x300d, "AI2", 1.0) == NULL) {
         goto out_closeHAL;
     }
 
-    if (add_modbus_register(mb, 0x3010, "HDI-frequency", 1.0) == NULL) {
+    if (add_modbus_register_float(mb, 0x3010, "HDI-frequency", 1.0) == NULL) {
         goto out_closeHAL;
     }
 
-    if (add_modbus_register(mb, 0x3014, "external-counter", 1.0) == NULL) {
+    if (add_modbus_register_float(mb, 0x3014, "external-counter", 1.0) == NULL) {
         goto out_closeHAL;
     }
 
-    if (add_modbus_register(mb, 0x5000, "fault-info", 1.0) == NULL) {
+    if (add_modbus_register_float(mb, 0x5000, "fault-info", 1.0) == NULL) {
+        goto out_closeHAL;
+    }
+
+    if (add_modbus_register_u32(mb, 0x5000, "fault-info-code", 1.0) == NULL) {
         goto out_closeHAL;
     }
 
@@ -611,28 +657,26 @@ int main(int argc, char **argv) {
     hal_ready(hal_comp_id);
 
     while (done == 0) {
-        if (*haldata->period < 0.001) *haldata->period = 0.001;
-        if (*haldata->period > 2.0) *haldata->period = 2.0;
-        period_timespec.tv_sec = (time_t)(*haldata->period);
-        period_timespec.tv_nsec = (long)((*haldata->period - period_timespec.tv_sec) * 1000000000l);
+        rtapi_real period = hal_get_real(haldata->period);
+        if (period < 0.001) period = hal_set_real(haldata->period, 0.001);
+        if (period > 2.0)   period = hal_set_real(haldata->period, 2.0);
+        period_timespec.tv_sec = (time_t)period;
+        period_timespec.tv_nsec = (long)((period - period_timespec.tv_sec) * 1000000000l);
         nanosleep(&period_timespec, NULL);
 
         read_modbus_registers(mb);
 
-        if (*haldata->spindle_on) {
+        if (hal_get_bool(haldata->spindle_on)) {
             set_motor_on_forward(mb);
-            *haldata->freq_cmd = (*haldata->speed_cmd / motor_max_speed) * max_freq;
-            set_motor_frequency(mb, *haldata->freq_cmd);
+            rtapi_real speed_cmd = hal_get_real(haldata->speed_cmd);
+            hal_set_real(haldata->freq_cmd, (speed_cmd / motor_max_speed) * max_freq);
+            set_motor_frequency(mb, hal_get_real(haldata->freq_cmd));
 
-            if ((fabs(*haldata->speed_cmd - *speed_fb_reg->hal_pin) / *haldata->speed_cmd) < 0.02) {
-                *haldata->at_speed = 1;
-            } else {
-                *haldata->at_speed = 0;
-            }
+            hal_set_bool(haldata->at_speed, (fabs(speed_cmd - hal_get_real(speed_fb_reg->hal_pin_float)) / speed_cmd) < 0.02);
         } else {
             set_motor_off(mb);
-            *haldata->at_speed = 0;
-            *haldata->freq_cmd = 0.0;
+            hal_set_bool(haldata->at_speed, 0);
+            hal_set_real(haldata->freq_cmd, 0.0);
         }
 
     }
